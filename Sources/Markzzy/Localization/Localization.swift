@@ -20,7 +20,8 @@ public enum LKey: String, CaseIterable {
     case orDragAbove, customPosition, metallicPreset
 
     // Sources section
-    case sources, screen, camera, mic, off, noneOption
+    case sources, screen, sourceLabel, camera, mic, off, noneOption
+    case outputVideo, crop
 
     // Shape labels
     case shapeCircle, shapeRectangle, shapeRoundedRect
@@ -66,8 +67,11 @@ public enum L10n {
             .position: "Position", .border: "Border", .color: "Color",
             .orDragAbove: "or drag above", .customPosition: "Custom (drag the PIP)",
             .metallicPreset: "Metallic preset",
-            .sources: "Sources", .screen: "Screen", .camera: "Camera",
+            .sources: "Sources",
+            .screen: "Screen", .sourceLabel: "Source",
+            .camera: "Camera",
             .mic: "Mic", .off: "Off", .noneOption: "None",
+            .outputVideo: "Output", .crop: "crop",
             .shapeCircle: "Circle", .shapeRectangle: "Rectangle",
             .shapeRoundedRect: "Rounded", .shapeSquircle: "Squircle",
             .shapeHexagon: "Hexagon", .shapeSoftEdge: "Soft",
@@ -116,8 +120,11 @@ public enum L10n {
             .orDragAbove: "o arrastra arriba",
             .customPosition: "Personalizada (arrastra)",
             .metallicPreset: "Estilo metálico",
-            .sources: "Fuentes", .screen: "Pantalla", .camera: "Cámara",
+            .sources: "Fuentes",
+            .screen: "Pantalla", .sourceLabel: "Fuente",
+            .camera: "Cámara",
             .mic: "Micrófono", .off: "Off", .noneOption: "Ninguna",
+            .outputVideo: "Salida", .crop: "crop",
             .shapeCircle: "Círculo", .shapeRectangle: "Rectángulo",
             .shapeRoundedRect: "Redondeada", .shapeSquircle: "Squircle",
             .shapeHexagon: "Hexágono", .shapeSoftEdge: "Suave",

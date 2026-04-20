@@ -52,7 +52,7 @@ struct ControlPanel: View {
 
                     GroupBox {
                         VStack(spacing: 10) {
-                            sourceRow(icon: "display", label: model.t(.screen)) {
+                            sourceRow(icon: "display", label: model.t(.sourceLabel)) {
                                 HStack(spacing: 6) {
                                     Picker("", selection: $model.selectedScreen) {
                                         ForEach(model.screenSources) {
@@ -61,15 +61,17 @@ struct ControlPanel: View {
                                     }
                                     .labelsHidden()
                                     if let cap = model.effectiveCaptureLabel {
-                                        Text(cap)
-                                            .font(.caption2.monospacedDigit())
-                                            .foregroundStyle(.white)
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(
-                                                Capsule().fill(Color.accentColor.opacity(0.85))
-                                            )
-                                            .help(cropTooltip)
+                                        HStack(spacing: 3) {
+                                            Text(model.t(.crop)).font(.caption2)
+                                            Text(cap).font(.caption2.monospacedDigit())
+                                        }
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(
+                                            Capsule().fill(Color.accentColor.opacity(0.85))
+                                        )
+                                        .help(cropTooltip)
                                     }
                                 }
                             }
@@ -94,6 +96,8 @@ struct ControlPanel: View {
                             if model.selectedMic != nil {
                                 micLevelMeter
                             }
+                            Divider()
+                            outputSummaryRow
                         }
                         .padding(.vertical, 2)
                     } label: {
@@ -201,6 +205,28 @@ struct ControlPanel: View {
                 .fill(active ? Color.accentColor : Color.secondary.opacity(0.12))
         )
         .help(formatTooltip(f))
+    }
+
+    private var outputSummaryRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "film")
+                .foregroundStyle(.tint)
+                .font(.system(size: 12, weight: .semibold))
+            Text(model.t(.outputVideo) + ":")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(outputSummaryText)
+                .font(.caption.monospacedDigit().weight(.semibold))
+                .foregroundStyle(.primary)
+            Spacer()
+        }
+    }
+
+    private var outputSummaryText: String {
+        guard let screen = model.selectedScreen else { return "—" }
+        let canvas = model.outputFormat.canvasSize(for: screen)
+        let formatName = model.outputFormat.localizedLabel(model.language)
+        return "\(Int(canvas.width))×\(Int(canvas.height)) · \(formatName) · MP4"
     }
 
     private var cropTooltip: String {
