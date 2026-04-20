@@ -10,6 +10,10 @@ struct ControlPanel: View {
             Divider()
             ScrollView {
                 VStack(spacing: 14) {
+                    outputSummaryHeader
+                        .padding(.horizontal, 16)
+                        .padding(.top, 14)
+
                     ZStack {
                         PIPComposedPreview()
                             .environmentObject(model)
@@ -19,7 +23,7 @@ struct ControlPanel: View {
                     }
                     .frame(height: 220)
                     .padding(.horizontal, 16)
-                    .padding(.top, 14)
+                    .padding(.top, 4)
 
                     formatBox
                         .padding(.horizontal, 16)
@@ -96,8 +100,6 @@ struct ControlPanel: View {
                             if model.selectedMic != nil {
                                 micLevelMeter
                             }
-                            Divider()
-                            outputSummaryRow
                         }
                         .padding(.vertical, 2)
                     } label: {
@@ -207,26 +209,29 @@ struct ControlPanel: View {
         .help(formatTooltip(f))
     }
 
-    private var outputSummaryRow: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "film")
+    /// Compact caption placed immediately above the preview canvas.
+    /// Groups the format name with its output dimensions so the user sees
+    /// the same metadata right where the canvas aspect changes shape.
+    private var outputSummaryHeader: some View {
+        HStack(spacing: 6) {
+            Image(systemName: model.outputFormat.sfSymbol)
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.tint)
-                .font(.system(size: 12, weight: .semibold))
-            Text(model.t(.outputVideo) + ":")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(outputSummaryText)
-                .font(.caption.monospacedDigit().weight(.semibold))
+            Text(model.outputFormat.localizedLabel(model.language))
+                .font(.caption.weight(.semibold))
                 .foregroundStyle(.primary)
+            Text("·").foregroundStyle(.tertiary).font(.caption)
+            Text(outputDimsText)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
             Spacer()
         }
     }
 
-    private var outputSummaryText: String {
+    private var outputDimsText: String {
         guard let screen = model.selectedScreen else { return "—" }
         let canvas = model.outputFormat.canvasSize(for: screen)
-        let formatName = model.outputFormat.localizedLabel(model.language)
-        return "\(Int(canvas.width))×\(Int(canvas.height)) · \(formatName) · MP4"
+        return "\(Int(canvas.width))×\(Int(canvas.height)) MP4"
     }
 
     private var cropTooltip: String {
