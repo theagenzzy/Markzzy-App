@@ -1,9 +1,9 @@
 import SwiftUI
 import AVFoundation
 
-/// Shows the simulated output: a dark canvas (aspect of the target screen)
-/// with the live camera drawn at the chosen shape/position/size/border.
-/// The PIP is draggable; snaps near corners and center-lines.
+/// Live preview of the output canvas. Renders screen + camera with a single
+/// persistent `CameraPreview` NSView whose frame/opacity is updated per layout
+/// — never destroyed — so the capture session doesn't flicker on UI changes.
 struct PIPComposedPreview: View {
     @EnvironmentObject var model: AppModel
 
@@ -11,69 +11,83 @@ struct PIPComposedPreview: View {
         GeometryReader { geo in
             let aspect = canvasAspect()
             let canvas = fitted(aspect: aspect, in: geo.size)
-            let canvasOrigin = CGPoint(
-                x: (geo.size.width - canvas.width) / 2,
+            let origin = CGPoint(
+                x: (geo.size.width  - canvas.width)  / 2,
                 y: (geo.size.height - canvas.height) / 2
             )
+            let s = screenFrame(canvas: canvas, origin: origin)
+            let c = cameraFrame(canvas: canvas, origin: origin)
 
             ZStack(alignment: .topLeading) {
-                layoutBackdrop(canvas: canvas)
+                // Canvas background (shows the target aspect).
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.black)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
+                    )
                     .frame(width: canvas.width, height: canvas.height)
-                    .offset(x: canvasOrigin.x, y: canvasOrigin.y)
+                    .offset(x: origin.x, y: origin.y)
 
+                // Drag area for the PIP (only meaningful in pipOverlay).
                 if model.layout == .pipOverlay, model.selectedCamera != nil {
-                    pip(canvas: canvas, origin: canvasOrigin)
+                    Color.clear
+                        .frame(width: canvas.width, height: canvas.height)
+                        .offset(x: origin.x, y: origin.y)
+                        .contentShape(Rectangle())
+                        .gesture(
+                            DragGesture(minimumDistance: 0, coordinateSpace: .named("canvas"))
+                                .onChanged { value in
+                                    let nx = (value.location.x - origin.x) / canvas.width
+                                    let ny = (value.location.y - origin.y) / canvas.height
+                                    model.pipPosition = CGPoint(
+                                        x: snap(clamp(nx), anchors: [0.12, 0.5, 0.88], threshold: 0.04),
+                                        y: snap(clamp(ny), anchors: [0.12, 0.5, 0.88], threshold: 0.04)
+                                    )
+                                }
+                        )
+                        .allowsHitTesting(model.selectedCamera != nil)
                 }
+
+                // Screen slot (always in the view tree).
+                screenView
+                    .frame(width: s.width, height: s.height)
+                    .clipped()
+                    .offset(x: s.minX, y: s.minY)
+                    .opacity(model.layout.usesScreen ? 1 : 0)
+                    .overlay(
+                        slotOutline
+                            .frame(width: s.width, height: s.height)
+                            .offset(x: s.minX, y: s.minY)
+                            .opacity(model.layout.usesScreen && showSlotGuides ? 1 : 0),
+                        alignment: .topLeading
+                    )
+
+                // Camera slot (always in the view tree — keeps the NSView alive).
+                cameraView(frame: c)
+                    .opacity(model.layout.usesCamera ? 1 : 0)
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+            .coordinateSpace(name: "canvas")
         }
     }
 
-    /// Returns the SwiftUI preview for the current output-format + layout combo.
-    @ViewBuilder
-    private func layoutBackdrop(canvas: CGSize) -> some View {
-        switch model.layout {
-        case .pipOverlay:
-            backdrop
-        case .splitScreenTop:
-            VStack(spacing: 0) {
-                screenSlot.frame(height: canvas.height / 2)
-                cameraSlot.frame(height: canvas.height / 2)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.25), lineWidth: 1))
-        case .splitCamTop:
-            VStack(spacing: 0) {
-                cameraSlot.frame(height: canvas.height / 2)
-                screenSlot.frame(height: canvas.height / 2)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.25), lineWidth: 1))
-        case .cameraOnly:
-            cameraSlot
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.25), lineWidth: 1))
-        case .screenOnly:
-            screenSlotFitted
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.25), lineWidth: 1))
-        }
+    private func clamp(_ v: CGFloat) -> CGFloat { min(max(v, 0.05), 0.95) }
+    private func snap(_ v: CGFloat, anchors: [CGFloat], threshold: CGFloat) -> CGFloat {
+        for a in anchors where abs(v - a) < threshold { return a }
+        return v
     }
 
-    @ViewBuilder
-    private var screenSlot: some View {
-        screenSlotFitted
-    }
+    // MARK: - Screen view
 
     @ViewBuilder
-    private var screenSlotFitted: some View {
+    private var screenView: some View {
         if let img = model.screenPreviewImage {
             Image(decorative: img, scale: 1)
                 .resizable()
-                .aspectRatio(contentMode: model.screenFit == .fill || model.screenFit == .center ? .fill : .fit)
+                .aspectRatio(contentMode: screenContentMode)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.black)
-                .clipped()
         } else {
             Color(NSColor.underPageBackgroundColor)
                 .overlay(
@@ -85,66 +99,103 @@ struct PIPComposedPreview: View {
         }
     }
 
+    private var screenContentMode: ContentMode {
+        switch model.screenFit {
+        case .fit:    return .fit
+        case .fill:   return .fill
+        case .center: return .fill
+        }
+    }
+
+    // MARK: - Camera view (stable across layouts)
+
     @ViewBuilder
-    private var cameraSlot: some View {
-        if model.selectedCamera != nil {
-            CameraPreview(session: model.previewSession)
-                .aspectRatio(contentMode: .fill)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
-        } else {
-            Color.black.overlay(
-                VStack(spacing: 4) {
-                    Image(systemName: "video.slash").font(.title2).foregroundStyle(.tertiary)
-                    Text("—").font(.caption).foregroundStyle(.tertiary)
+    private func cameraView(frame c: CGRect) -> some View {
+        let isOverlay = model.layout == .pipOverlay
+
+        ZStack {
+            if model.selectedCamera != nil {
+                CameraPreview(session: model.previewSession)
+                    .compositingGroup()
+                    .mask(cameraMask)
+                if isOverlay, !model.pipShape.usesSoftMask, model.pipBorder.style != .none {
+                    ShapedBorderOverlay(shape: model.pipShape, border: model.pipBorder)
                 }
-            )
+            } else {
+                Color.black.overlay(
+                    Image(systemName: "video.slash")
+                        .font(.title2)
+                        .foregroundStyle(.tertiary)
+                )
+            }
         }
+        .shadow(color: isOverlay ? .black.opacity(0.35) : .clear, radius: 6, y: 2)
+        .frame(width: c.width, height: c.height)
+        .offset(x: c.minX, y: c.minY)
+        .overlay(
+            slotOutline
+                .frame(width: c.width, height: c.height)
+                .offset(x: c.minX, y: c.minY)
+                .opacity(!isOverlay && model.layout.usesCamera && showSlotGuides ? 1 : 0),
+            alignment: .topLeading
+        )
     }
-
-    private var isRecording: Bool {
-        if case .recording = model.state { return true } else { return false }
-    }
-
-    // MARK: - Parts
 
     @ViewBuilder
-    private var backdrop: some View {
-        if let img = model.screenPreviewImage {
-            Image(decorative: img, scale: 1)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
+    private var cameraMask: some View {
+        if model.layout == .pipOverlay {
+            if model.pipShape.usesSoftMask {
+                RadialGradient(
+                    colors: [.white, .white, .clear],
+                    center: .center,
+                    startRadius: 0,
+                    endRadius: 1000
                 )
+            } else {
+                model.pipShape.anyShape().fill(Color.black)
+            }
         } else {
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color(NSColor.underPageBackgroundColor))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
-                )
-                .overlay(
-                    VStack(spacing: 4) {
-                        Image(systemName: "display").font(.title2).foregroundStyle(.tertiary)
-                        Text(model.t(.screenPreview)).font(.caption).foregroundStyle(.tertiary)
-                    }
-                )
+            Rectangle().fill(Color.black)
         }
     }
 
-    @ViewBuilder
-    private func pip(canvas: CGSize, origin: CGPoint) -> some View {
-        let pipW = canvas.width * model.pipSize
-        // Match compositor: non-rectangular shapes are square (centered crop).
-        let pipH: CGFloat = model.pipShape == .rectangle
-            ? pipW / cameraAspect()
-            : pipW
+    // MARK: - Layout-dependent frames
 
-        // Clamp preview so the PIP never escapes the canvas (matches the
-        // compositor's padding behavior during recording).
+    private func screenFrame(canvas: CGSize, origin: CGPoint) -> CGRect {
+        switch model.layout {
+        case .pipOverlay, .screenOnly:
+            return CGRect(origin: origin, size: canvas)
+        case .splitScreenTop:
+            return CGRect(x: origin.x, y: origin.y,
+                          width: canvas.width, height: canvas.height / 2)
+        case .splitCamTop:
+            return CGRect(x: origin.x, y: origin.y + canvas.height / 2,
+                          width: canvas.width, height: canvas.height / 2)
+        case .cameraOnly:
+            return .zero
+        }
+    }
+
+    private func cameraFrame(canvas: CGSize, origin: CGPoint) -> CGRect {
+        switch model.layout {
+        case .pipOverlay:
+            return pipRect(canvas: canvas, origin: origin)
+        case .splitScreenTop:
+            return CGRect(x: origin.x, y: origin.y + canvas.height / 2,
+                          width: canvas.width, height: canvas.height / 2)
+        case .splitCamTop:
+            return CGRect(x: origin.x, y: origin.y,
+                          width: canvas.width, height: canvas.height / 2)
+        case .cameraOnly:
+            return CGRect(origin: origin, size: canvas)
+        case .screenOnly:
+            return .zero
+        }
+    }
+
+    private func pipRect(canvas: CGSize, origin: CGPoint) -> CGRect {
+        let pipW = canvas.width * model.pipSize
+        let pipH: CGFloat = model.pipShape == .rectangle ? pipW / cameraAspect() : pipW
         let pad: CGFloat = (model.pipBorder.cgColor != nil) ? model.pipBorder.lineWidth : 4
         let rawX = origin.x + model.pipPosition.x * canvas.width
         let rawY = origin.y + model.pipPosition.y * canvas.height
@@ -152,49 +203,24 @@ struct PIPComposedPreview: View {
         let maxX = origin.x + canvas.width  - pipW / 2 - pad
         let minY = origin.y + pipH / 2 + pad
         let maxY = origin.y + canvas.height - pipH / 2 - pad
-        let centerX = min(max(rawX, minX), maxX)
-        let centerY = min(max(rawY, minY), maxY)
+        let cX = min(max(rawX, minX), maxX)
+        let cY = min(max(rawY, minY), maxY)
+        return CGRect(x: cX - pipW / 2, y: cY - pipH / 2, width: pipW, height: pipH)
+    }
 
-        Group {
-            if isRecording {
-                // Composed frame in the backdrop already has the camera. Show a
-                // dashed guide so the user can still drag to reposition.
-                model.pipShape.anyShape()
-                    .stroke(
-                        Color.white.opacity(0.9),
-                        style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])
-                    )
-                    .background(Color.white.opacity(0.05))
-                    .frame(width: pipW, height: pipH)
-            } else {
-                ShapedCamera(shape: model.pipShape, border: model.pipBorder)
-                    .environmentObject(model)
-                    .frame(width: pipW, height: pipH)
-                    .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
-            }
-        }
-        .position(x: centerX, y: centerY)
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { value in
-                    let nx = (value.location.x - origin.x) / canvas.width
-                    let ny = (value.location.y - origin.y) / canvas.height
-                    model.pipPosition = CGPoint(
-                        x: snap(clamp(nx), anchors: [0.12, 0.5, 0.88], threshold: 0.04),
-                        y: snap(clamp(ny), anchors: [0.12, 0.5, 0.88], threshold: 0.04)
-                    )
-                }
-        )
+    // MARK: - Gestures / guides
+
+    private var slotOutline: some View {
+        RoundedRectangle(cornerRadius: 4)
+            .stroke(Color.white.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+    }
+
+    private var showSlotGuides: Bool { !isRecording }
+    private var isRecording: Bool {
+        if case .recording = model.state { return true } else { return false }
     }
 
     // MARK: - Helpers
-
-    private func fitted(aspect: CGFloat, in container: CGSize) -> CGSize {
-        let ca = container.width / container.height
-        return aspect > ca
-            ? CGSize(width: container.width, height: container.width / aspect)
-            : CGSize(width: container.height * aspect, height: container.height)
-    }
 
     private func canvasAspect() -> CGFloat {
         switch model.outputFormat {
@@ -211,28 +237,33 @@ struct PIPComposedPreview: View {
         return 16.0 / 10.0
     }
 
-    private func cameraAspect() -> CGFloat {
-        // iPhone Continuity is typically portrait-ish 4:3 rotated;
-        // builtin is 16:9 or 4:3. Default to 4:3 landscape.
-        return 4.0 / 3.0
-    }
+    private func cameraAspect() -> CGFloat { 4.0 / 3.0 }
 
-    private func clamp(_ v: CGFloat) -> CGFloat { min(max(v, 0.05), 0.95) }
-
-    private func snap(_ v: CGFloat, anchors: [CGFloat], threshold: CGFloat) -> CGFloat {
-        for a in anchors where abs(v - a) < threshold { return a }
-        return v
+    private func fitted(aspect: CGFloat, in container: CGSize) -> CGSize {
+        let ca = container.width / container.height
+        return aspect > ca
+            ? CGSize(width: container.width, height: container.width / aspect)
+            : CGSize(width: container.height * aspect, height: container.height)
     }
 }
 
-/// Wraps CameraPreview with the chosen shape clip and border stroke.
-private struct ShapedCamera: View {
-    @EnvironmentObject var model: AppModel
+/// Border overlay that paints the stroke/gradient/glow on top of a clipped
+/// CameraPreview. Extracted so the PIP ZStack stays readable.
+private struct ShapedBorderOverlay: View {
     let shape: PIPShape
     let border: PIPBorder
 
+    var body: some View {
+        GeometryReader { geo in
+            let side = min(geo.size.width, geo.size.height)
+            if let color = border.swiftUIColor {
+                content(color: color, width: border.lineWidth, side: side)
+            }
+        }
+    }
+
     @ViewBuilder
-    func borderOverlay(color: Color, width w: CGFloat, side: CGFloat) -> some View {
+    private func content(color: Color, width w: CGFloat, side: CGFloat) -> some View {
         switch border.style {
         case .none:
             EmptyView()
@@ -242,12 +273,10 @@ private struct ShapedCamera: View {
             let palette = PIPBorder.gradientPalette(from: border.color, to: border.color2)
                 .map { Color(cgColor: $0) }
             shape.anyShape().stroke(
-                AngularGradient(
-                    gradient: Gradient(colors: palette),
-                    center: .center,
-                    startAngle: .degrees(-90),
-                    endAngle: .degrees(270)
-                ),
+                AngularGradient(gradient: Gradient(colors: palette),
+                                center: .center,
+                                startAngle: .degrees(-90),
+                                endAngle: .degrees(270)),
                 lineWidth: w
             )
         case .chrome:
@@ -260,8 +289,7 @@ private struct ShapedCamera: View {
                         .init(color: Color(white: 0.88), location: 0.7),
                         .init(color: .white, location: 1),
                     ],
-                    startPoint: .top,
-                    endPoint: .bottom
+                    startPoint: .top, endPoint: .bottom
                 ),
                 lineWidth: w
             )
@@ -275,33 +303,6 @@ private struct ShapedCamera: View {
             shape.anyShape()
                 .stroke(color, lineWidth: max(1, w * 0.8))
                 .shadow(color: color, radius: w * 2)
-        }
-    }
-
-    var body: some View {
-        GeometryReader { geo in
-            let side = min(geo.size.width, geo.size.height)
-            let camera = CameraPreview(session: model.previewSession)
-            ZStack {
-                if shape.usesSoftMask {
-                    camera.mask(
-                        RadialGradient(
-                            colors: [.white, .white, .clear],
-                            center: .center,
-                            startRadius: 0,
-                            endRadius: side / 2
-                        )
-                    )
-                } else {
-                    camera
-                        .compositingGroup()
-                        .mask(shape.anyShape())
-                }
-
-                if let color = border.swiftUIColor, !shape.usesSoftMask {
-                    borderOverlay(color: color, width: border.lineWidth, side: side)
-                }
-            }
         }
     }
 }

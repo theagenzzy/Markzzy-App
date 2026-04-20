@@ -7,6 +7,7 @@ struct VideoLibraryView: View {
     @EnvironmentObject var model: AppModel
     @State private var items: [VideoItem] = []
     @State private var thumbnails: [URL: NSImage] = [:]
+    @State private var aspects: [URL: CGFloat] = [:]
     @State private var pendingDelete: VideoItem?
 
     private let columns = [
@@ -29,6 +30,7 @@ struct VideoLibraryView: View {
                             VideoCard(
                                 item: item,
                                 thumbnail: thumbnails[item.url],
+                                aspect: aspects[item.url] ?? 16.0 / 9.0,
                                 onPreview: { NSWorkspace.shared.open(item.url) },
                                 onReveal: { model.revealInFinder(item.url) },
                                 onDelete: { pendingDelete = item }
@@ -174,20 +176,25 @@ struct VideoLibraryView: View {
     private func loadThumbnail(for item: VideoItem) async {
         if thumbnails[item.url] != nil { return }
         let url = item.url
-        let image: NSImage? = await Task.detached(priority: .utility) {
+        struct ThumbnailResult: Sendable { let image: NSImage?; let aspect: CGFloat? }
+        let result: ThumbnailResult = await Task.detached(priority: .utility) {
             let asset = AVURLAsset(url: url)
             let gen = AVAssetImageGenerator(asset: asset)
             gen.appliesPreferredTrackTransform = true
-            gen.maximumSize = CGSize(width: 480, height: 270)
+            gen.maximumSize = CGSize(width: 480, height: 480)
             let time = CMTime(seconds: 0.1, preferredTimescale: 600)
             do {
                 let cg = try await gen.image(at: time).image
-                return NSImage(cgImage: cg, size: .zero)
+                let aspect = CGFloat(cg.width) / CGFloat(max(cg.height, 1))
+                return ThumbnailResult(image: NSImage(cgImage: cg, size: .zero), aspect: aspect)
             } catch {
-                return nil
+                return ThumbnailResult(image: nil, aspect: nil)
             }
         }.value
-        await MainActor.run { thumbnails[url] = image }
+        await MainActor.run {
+            thumbnails[url] = result.image
+            if let a = result.aspect { aspects[url] = a }
+        }
     }
 }
 
@@ -195,6 +202,7 @@ private struct VideoCard: View {
     @EnvironmentObject var model: AppModel
     let item: VideoItem
     let thumbnail: NSImage?
+    let aspect: CGFloat
     let onPreview: () -> Void
     let onReveal: () -> Void
     let onDelete: () -> Void
@@ -222,7 +230,7 @@ private struct VideoCard: View {
                 }
                 .buttonStyle(.plain)
             }
-            .aspectRatio(16.0/9.0, contentMode: .fit)
+            .aspectRatio(aspect, contentMode: .fit)
             .frame(maxWidth: .infinity)
 
             Text(item.name)

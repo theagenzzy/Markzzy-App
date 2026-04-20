@@ -187,6 +187,15 @@ struct ControlPanel: View {
             RoundedRectangle(cornerRadius: 5)
                 .fill(active ? Color.accentColor : Color.secondary.opacity(0.12))
         )
+        .help(formatTooltip(f))
+    }
+
+    private func formatTooltip(_ f: OutputFormat) -> String {
+        switch f {
+        case .youtube:  "YouTube · Vimeo · Loom · Courses — native screen size"
+        case .reel916:  "TikTok · Instagram Reels · YouTube Shorts · Facebook Reels · Stories — 1080×1920"
+        case .square11: "Instagram feed · Facebook feed — 1080×1080"
+        }
     }
 
     private func layoutButton(_ l: Layout) -> some View {
