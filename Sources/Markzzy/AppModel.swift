@@ -290,6 +290,37 @@ public final class AppModel: ObservableObject {
 
     public func t(_ key: LKey) -> String { L10n.t(key, in: language) }
 
+    /// Effective screen capture dimensions after the format/layout/anchor crop.
+    /// Used to tell the user what portion of their display is actually recorded.
+    public var effectiveCaptureRect: CGRect? {
+        guard let screen = selectedScreen else { return nil }
+        if !layout.usesScreen { return nil }
+        let sw = CGFloat(screen.width)
+        let sh = CGFloat(screen.height)
+        let canvas = outputFormat.canvasSize(for: screen)
+        let slotAspect: CGFloat
+        switch layout {
+        case .pipOverlay, .screenOnly:
+            slotAspect = canvas.width / canvas.height
+        case .splitScreenTop, .splitCamTop:
+            slotAspect = canvas.width / (canvas.height / 2)
+        case .cameraOnly:
+            return nil
+        }
+        return PIPCompositor.cropRect(
+            sourceWidth: sw, sourceHeight: sh,
+            targetAspect: slotAspect, anchor: screenAnchor
+        )
+    }
+
+    /// User-facing short label for the effective capture. Returns `nil` when
+    /// there's no crop applied (e.g. YouTube preset uses the full display).
+    public var effectiveCaptureLabel: String? {
+        guard let r = effectiveCaptureRect, let screen = selectedScreen else { return nil }
+        if Int(r.width) == screen.width, Int(r.height) == screen.height { return nil }
+        return "\(Int(r.width))×\(Int(r.height))"
+    }
+
     // MARK: - Output directory
 
     private static func loadStoredOutputDirectory() -> URL {

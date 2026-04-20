@@ -53,12 +53,25 @@ struct ControlPanel: View {
                     GroupBox {
                         VStack(spacing: 10) {
                             sourceRow(icon: "display", label: model.t(.screen)) {
-                                Picker("", selection: $model.selectedScreen) {
-                                    ForEach(model.screenSources) {
-                                        Text($0.title).tag(Optional($0))
+                                HStack(spacing: 6) {
+                                    Picker("", selection: $model.selectedScreen) {
+                                        ForEach(model.screenSources) {
+                                            Text($0.title).tag(Optional($0))
+                                        }
+                                    }
+                                    .labelsHidden()
+                                    if let cap = model.effectiveCaptureLabel {
+                                        Text(cap)
+                                            .font(.caption2.monospacedDigit())
+                                            .foregroundStyle(.white)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(
+                                                Capsule().fill(Color.accentColor.opacity(0.85))
+                                            )
+                                            .help(cropTooltip)
                                     }
                                 }
-                                .labelsHidden()
                             }
                             sourceRow(icon: "video", label: model.t(.camera)) {
                                 Picker("", selection: $model.selectedCamera) {
@@ -188,6 +201,12 @@ struct ControlPanel: View {
                 .fill(active ? Color.accentColor : Color.secondary.opacity(0.12))
         )
         .help(formatTooltip(f))
+    }
+
+    private var cropTooltip: String {
+        guard let r = model.effectiveCaptureRect, let s = model.selectedScreen else { return "" }
+        let anchor = model.screenAnchor.localizedLabel(model.language)
+        return "\(Int(r.width))×\(Int(r.height)) · \(anchor) · source \(s.width)×\(s.height)"
     }
 
     private func formatTooltip(_ f: OutputFormat) -> String {
