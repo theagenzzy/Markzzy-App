@@ -1,0 +1,43 @@
+# macOS
+.DS_Store
+._*
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+Package.pins
+
+# Xcode
+build/
+DerivedData/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.moved-aside
+*.hmap
+
+# Logs / temp
+*.log
+*.tmp
+/tmp/
+
+# Claude Code — keep shared settings.json & skills, ignore personal overrides
+.claude/settings.local.json
+.claude/logs/
+
+# Generated app bundle (shouldn't be in repo, just in case)
+Markzzy.app/
+
+# Recordings / media (never commit user videos)
+*.mp4
+*.mov
+*.m4a
+
+# Code signing / certs
+*.p12
+*.cer
+*.mobileprovision
+*.icns
