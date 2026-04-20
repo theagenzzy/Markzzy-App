@@ -65,8 +65,8 @@ public final class AppModel: ObservableObject {
     @Published public var layout: Layout = AppModel.loadLayout() {
         didSet { UserDefaults.standard.set(layout.rawValue, forKey: Keys.layout) }
     }
-    @Published public var screenFit: ScreenFit = AppModel.loadScreenFit() {
-        didSet { UserDefaults.standard.set(screenFit.rawValue, forKey: Keys.screenFit) }
+    @Published public var screenAnchor: ScreenAnchor = AppModel.loadScreenAnchor() {
+        didSet { UserDefaults.standard.set(screenAnchor.rawValue, forKey: Keys.screenAnchor) }
     }
     @Published public var countdownEnabled: Bool = AppModel.loadCountdownEnabled() {
         didSet { UserDefaults.standard.set(countdownEnabled, forKey: Keys.countdownEnabled) }
@@ -215,7 +215,7 @@ public final class AppModel: ObservableObject {
                 bitrate: quality.bitrate,
                 format: outputFormat,
                 layout: layout,
-                screenFit: screenFit
+                screenAnchor: screenAnchor
             )
             pipe.onComposedFrame = { [weak self] buffer in
                 self?.livePreview.push(buffer)
@@ -351,7 +351,7 @@ public final class AppModel: ObservableObject {
         static let faceCam           = "faceCamSettings"
         static let format            = "outputFormat"
         static let layout            = "layout"
-        static let screenFit         = "screenFit"
+        static let screenAnchor      = "screenAnchor"
     }
 
     private static func loadFormat() -> OutputFormat {
@@ -364,10 +364,10 @@ public final class AppModel: ObservableObject {
            let l = Layout(rawValue: raw) { return l }
         return .pipOverlay
     }
-    private static func loadScreenFit() -> ScreenFit {
-        if let raw = UserDefaults.standard.string(forKey: Keys.screenFit),
-           let s = ScreenFit(rawValue: raw) { return s }
-        return .fit
+    private static func loadScreenAnchor() -> ScreenAnchor {
+        if let raw = UserDefaults.standard.string(forKey: Keys.screenAnchor),
+           let s = ScreenAnchor(rawValue: raw) { return s }
+        return .center
     }
 
     private static func loadLanguage() -> AppLanguage {

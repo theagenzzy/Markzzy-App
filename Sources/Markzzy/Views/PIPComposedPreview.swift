@@ -83,10 +83,14 @@ struct PIPComposedPreview: View {
     @ViewBuilder
     private var screenView: some View {
         if let img = model.screenPreviewImage {
+            // Aspect-fill with the chosen anchor so we show exactly the crop
+            // that will actually be recorded (no letterboxing, no stretching).
             Image(decorative: img, scale: 1)
                 .resizable()
-                .aspectRatio(contentMode: screenContentMode)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .aspectRatio(contentMode: .fill)
+                .frame(maxWidth: .infinity, maxHeight: .infinity,
+                       alignment: screenAnchorAlignment)
+                .clipped()
                 .background(Color.black)
         } else {
             Color(NSColor.underPageBackgroundColor)
@@ -99,11 +103,11 @@ struct PIPComposedPreview: View {
         }
     }
 
-    private var screenContentMode: ContentMode {
-        switch model.screenFit {
-        case .fit:    return .fit
-        case .fill:   return .fill
-        case .center: return .fill
+    private var screenAnchorAlignment: Alignment {
+        switch model.screenAnchor {
+        case .center: return .center
+        case .left:   return .leading
+        case .right:  return .trailing
         }
     }
 

@@ -111,12 +111,14 @@ public final class PIPCompositor {
     }
 
     /// Render arbitrary layout into `out`. Handles YouTube PIP, vertical/square
-    /// split layouts, camera-only, and screen-only — each with its own crop/fit.
+    /// split layouts, camera-only, and screen-only. The screen is pre-cropped
+    /// to the slot's aspect using `anchor` so it fills its area without
+    /// letterboxing or stretching.
     public func render(screen: CVPixelBuffer?,
                        camera: CVPixelBuffer?,
                        into out: CVPixelBuffer,
                        layout: Layout,
-                       screenFit: ScreenFit) {
+                       screenAnchor: ScreenAnchor) {
         let outW = CGFloat(CVPixelBufferGetWidth(out))
         let outH = CGFloat(CVPixelBufferGetHeight(out))
         let canvasRect = CGRect(x: 0, y: 0, width: outW, height: outH)
@@ -136,62 +138,106 @@ public final class PIPCompositor {
 
         switch layout {
         case .pipOverlay:
-            break  // handled above
+            break
         case .cameraOnly:
             if let cam = camera {
-                result = Self.fit(CIImage(cvPixelBuffer: cam), into: canvasRect, mode: .fill)
+                result = Self.placeAspectFill(CIImage(cvPixelBuffer: cam), into: canvasRect)
                     .composited(over: result)
             }
         case .screenOnly:
             if let s = screen {
-                result = Self.fit(CIImage(cvPixelBuffer: s), into: canvasRect, mode: screenFit)
-                    .composited(over: result)
+                let src = CIImage(cvPixelBuffer: s)
+                let cropped = Self.cropToAspect(src, targetAspect: canvasRect.width / canvasRect.height,
+                                                anchor: screenAnchor)
+                result = Self.placeInSlot(cropped, into: canvasRect).composited(over: result)
             }
         case .splitScreenTop, .splitCamTop:
             let topRect    = CGRect(x: 0, y: outH / 2, width: outW, height: outH / 2)
             let bottomRect = CGRect(x: 0, y: 0,        width: outW, height: outH / 2)
             // NOTE: CoreImage origin is bottom-left, so "topRect" = upper half.
 
-            let screenCI = screen.map { CIImage(cvPixelBuffer: $0) }
-            let cameraCI = camera.map { CIImage(cvPixelBuffer: $0) }
-
             let screenSlot = layout == .splitScreenTop ? topRect : bottomRect
             let cameraSlot = layout == .splitScreenTop ? bottomRect : topRect
 
-            if let s = screenCI {
-                result = Self.fit(s, into: screenSlot, mode: screenFit).composited(over: result)
+            if let s = screen {
+                let src = CIImage(cvPixelBuffer: s)
+                let cropped = Self.cropToAspect(src,
+                                                targetAspect: screenSlot.width / screenSlot.height,
+                                                anchor: screenAnchor)
+                result = Self.placeInSlot(cropped, into: screenSlot).composited(over: result)
             }
-            if let c = cameraCI {
-                // Face cam always aspect-fill so faces are never letterboxed.
-                result = Self.fit(c, into: cameraSlot, mode: .fill).composited(over: result)
+            if let c = camera {
+                result = Self.placeAspectFill(CIImage(cvPixelBuffer: c), into: cameraSlot)
+                    .composited(over: result)
             }
         }
 
         ciContext.render(result, to: out)
     }
 
-    /// Scale `image` into `dest` according to `mode`, returning a positioned CIImage.
-    private static func fit(_ image: CIImage, into dest: CGRect, mode: ScreenFit) -> CIImage {
-        let srcW = image.extent.width
-        let srcH = image.extent.height
-        guard srcW > 0, srcH > 0 else { return image }
-
-        let scaleX = dest.width / srcW
-        let scaleY = dest.height / srcH
-        let scale: CGFloat
-        switch mode {
-        case .fit:    scale = min(scaleX, scaleY)
-        case .fill:   scale = max(scaleX, scaleY)
-        case .center: scale = 1  // keep native pixels; center-crop below
+    /// Compute the source-space crop rect that would make `source` match `targetAspect`.
+    /// Useful for overlay previews that need to highlight the excluded region.
+    public static func cropRect(sourceWidth srcW: CGFloat, sourceHeight srcH: CGFloat,
+                                targetAspect: CGFloat, anchor: ScreenAnchor) -> CGRect {
+        guard srcW > 0, srcH > 0 else { return .zero }
+        let srcAspect = srcW / srcH
+        var cropW = srcW
+        var cropH = srcH
+        if srcAspect > targetAspect {
+            cropW = srcH * targetAspect
+        } else {
+            cropH = srcW / targetAspect
         }
+        let offX: CGFloat
+        switch anchor {
+        case .left:   offX = 0
+        case .center: offX = (srcW - cropW) / 2
+        case .right:  offX = srcW - cropW
+        }
+        let offY = (srcH - cropH) / 2
+        return CGRect(x: offX, y: offY, width: cropW, height: cropH)
+    }
 
+    /// Crop `image` to the target aspect using the anchor, returning a CIImage
+    /// whose extent starts at (0, 0).
+    private static func cropToAspect(_ image: CIImage,
+                                     targetAspect: CGFloat,
+                                     anchor: ScreenAnchor) -> CIImage {
+        let crop = cropRect(sourceWidth: image.extent.width,
+                            sourceHeight: image.extent.height,
+                            targetAspect: targetAspect, anchor: anchor)
+        let absCrop = CGRect(x: image.extent.origin.x + crop.origin.x,
+                             y: image.extent.origin.y + crop.origin.y,
+                             width: crop.width, height: crop.height)
+        return image.cropped(to: absCrop)
+            .transformed(by: CGAffineTransform(translationX: -absCrop.origin.x,
+                                                y: -absCrop.origin.y))
+    }
+
+    /// Scale an already-correctly-cropped image so it fills `slot` exactly.
+    private static func placeInSlot(_ image: CIImage, into slot: CGRect) -> CIImage {
+        guard image.extent.width > 0, image.extent.height > 0 else { return image }
+        let scale = slot.width / image.extent.width
         let scaled = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        let scaledW = scaled.extent.width
-        let scaledH = scaled.extent.height
-        let dx = dest.midX - (scaled.extent.origin.x + scaledW / 2)
-        let dy = dest.midY - (scaled.extent.origin.y + scaledH / 2)
-        let positioned = scaled.transformed(by: CGAffineTransform(translationX: dx, y: dy))
-        return positioned.cropped(to: dest)
+        let dx = slot.midX - scaled.extent.midX
+        let dy = slot.midY - scaled.extent.midY
+        return scaled
+            .transformed(by: CGAffineTransform(translationX: dx, y: dy))
+            .cropped(to: slot)
+    }
+
+    /// Scale `image` to fill `dest`, cropping overflow on the longer axis.
+    private static func placeAspectFill(_ image: CIImage, into dest: CGRect) -> CIImage {
+        guard image.extent.width > 0, image.extent.height > 0 else { return image }
+        let scaleX = dest.width / image.extent.width
+        let scaleY = dest.height / image.extent.height
+        let scale = max(scaleX, scaleY)
+        let scaled = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let dx = dest.midX - scaled.extent.midX
+        let dy = dest.midY - scaled.extent.midY
+        return scaled
+            .transformed(by: CGAffineTransform(translationX: dx, y: dy))
+            .cropped(to: dest)
     }
 
     // MARK: - Shape masking

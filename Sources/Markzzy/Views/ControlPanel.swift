@@ -146,12 +146,12 @@ struct ControlPanel: View {
                     if model.layout.usesScreen {
                         Divider()
                         HStack(spacing: 10) {
-                            Text(model.t(.screenFit))
+                            Text(model.t(.screenAnchor))
                                 .frame(width: 70, alignment: .leading)
                                 .foregroundStyle(.secondary)
-                            Picker("", selection: $model.screenFit) {
-                                ForEach(ScreenFit.allCases) { fit in
-                                    Text(fit.localizedLabel(model.language)).tag(fit)
+                            Picker("", selection: $model.screenAnchor) {
+                                ForEach(ScreenAnchor.allCases) { a in
+                                    Text(a.localizedLabel(model.language)).tag(a)
                                 }
                             }
                             .pickerStyle(.segmented)

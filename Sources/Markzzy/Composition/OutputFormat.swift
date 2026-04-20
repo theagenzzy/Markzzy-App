@@ -75,19 +75,27 @@ public enum Layout: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-/// How the source is scaled into its destination rect when aspect ratios don't match.
-public enum ScreenFit: String, CaseIterable, Identifiable, Codable {
-    case fit     // aspect-fit, letterbox black bars
-    case fill    // aspect-fill, crop overflow
-    case center  // center-crop (fill but only on one axis if smaller)
+/// Where on the captured display the crop is anchored when the source aspect
+/// differs from the destination slot aspect. Source is cropped to match the
+/// slot so it always fills cleanly without letterboxing or stretching.
+public enum ScreenAnchor: String, CaseIterable, Identifiable, Codable {
+    case center, left, right
 
     public var id: String { rawValue }
 
+    public var sfSymbol: String {
+        switch self {
+        case .center: "rectangle.center.inset.filled"
+        case .left:   "rectangle.leftthird.inset.filled"
+        case .right:  "rectangle.rightthird.inset.filled"
+        }
+    }
+
     public func localizedLabel(_ lang: AppLanguage) -> String {
         switch self {
-        case .fit:    L10n.t(.fitFit, in: lang)
-        case .fill:   L10n.t(.fitFill, in: lang)
-        case .center: L10n.t(.fitCenter, in: lang)
+        case .center: L10n.t(.anchorCenter, in: lang)
+        case .left:   L10n.t(.anchorLeft, in: lang)
+        case .right:  L10n.t(.anchorRight, in: lang)
         }
     }
 }

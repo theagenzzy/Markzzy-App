@@ -47,7 +47,7 @@ public enum LKey: String, CaseIterable {
     case layout
     case layoutPipOverlay, layoutSplitScreenTop, layoutSplitCamTop
     case layoutCameraOnly, layoutScreenOnly
-    case screenFit, fitFit, fitFill, fitCenter
+    case screenAnchor, anchorCenter, anchorLeft, anchorRight
     case faceCamHiddenNote
 
     // Settings
@@ -97,8 +97,8 @@ public enum L10n {
             .layoutSplitCamTop: "Cam top / Screen bottom",
             .layoutCameraOnly: "Camera only",
             .layoutScreenOnly: "Screen only",
-            .screenFit: "Screen fit",
-            .fitFit: "Fit", .fitFill: "Fill", .fitCenter: "Center",
+            .screenAnchor: "Screen anchor",
+            .anchorCenter: "Center", .anchorLeft: "Left", .anchorRight: "Right",
             .faceCamHiddenNote: "Face-cam controls apply only to the YouTube preset.",
             .settings: "Settings", .general: "General", .language: "Language",
             .quality: "Quality",
@@ -147,8 +147,8 @@ public enum L10n {
             .layoutSplitCamTop: "Cámara arriba / Pantalla abajo",
             .layoutCameraOnly: "Solo cámara",
             .layoutScreenOnly: "Solo pantalla",
-            .screenFit: "Encaje pantalla",
-            .fitFit: "Ajustar", .fitFill: "Llenar", .fitCenter: "Centrar",
+            .screenAnchor: "Anclaje de pantalla",
+            .anchorCenter: "Centro", .anchorLeft: "Izquierda", .anchorRight: "Derecha",
             .faceCamHiddenNote: "Los controles de cámara aplican solo al preset YouTube.",
             .settings: "Ajustes", .general: "General", .language: "Idioma",
             .quality: "Calidad",

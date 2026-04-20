@@ -12,7 +12,7 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
     private let recorder: Recorder
     private let format: OutputFormat
     private let layout: Layout
-    private let screenFit: ScreenFit
+    private let screenAnchor: ScreenAnchor
     private let canvasSize: CGSize
     private let queue = DispatchQueue(label: "markzzy.pipeline.sc")
     private let camQueue = DispatchQueue(label: "markzzy.pipeline.cam")
@@ -44,13 +44,13 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
                 bitrate: Int = 8_000_000,
                 format: OutputFormat = .youtube,
                 layout: Layout = .pipOverlay,
-                screenFit: ScreenFit = .fit) throws {
+                screenAnchor: ScreenAnchor = .center) throws {
         self.source = screen
         self.camera = camera
         self.microphone = microphone
         self.format = format
         self.layout = layout
-        self.screenFit = screenFit
+        self.screenAnchor = screenAnchor
         let size = format.canvasSize(for: screen)
         self.canvasSize = size
         self.compositor = PIPCompositor(
@@ -114,7 +114,7 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
         CVPixelBufferPoolCreatePixelBuffer(nil, pool, &out)
         guard let out else { return }
         compositor.render(screen: base, camera: overlay, into: out,
-                          layout: layout, screenFit: screenFit)
+                          layout: layout, screenAnchor: screenAnchor)
         recorder.appendVideo(out, pts: pts)
         onComposedFrame?(out)
     }
