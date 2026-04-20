@@ -110,6 +110,90 @@ public final class PIPCompositor {
         ciContext.render(composed, to: out)
     }
 
+    /// Render arbitrary layout into `out`. Handles YouTube PIP, vertical/square
+    /// split layouts, camera-only, and screen-only — each with its own crop/fit.
+    public func render(screen: CVPixelBuffer?,
+                       camera: CVPixelBuffer?,
+                       into out: CVPixelBuffer,
+                       layout: Layout,
+                       screenFit: ScreenFit) {
+        let outW = CGFloat(CVPixelBufferGetWidth(out))
+        let outH = CGFloat(CVPixelBufferGetHeight(out))
+        let canvasRect = CGRect(x: 0, y: 0, width: outW, height: outH)
+
+        if layout == .pipOverlay {
+            // Preserve current behavior exactly: pass through compose().
+            if let screen {
+                let composed = compose(base: screen, overlay: camera)
+                ciContext.render(composed, to: out)
+            } else {
+                ciContext.render(CIImage(color: .black).cropped(to: canvasRect), to: out)
+            }
+            return
+        }
+
+        var result = CIImage(color: .black).cropped(to: canvasRect)
+
+        switch layout {
+        case .pipOverlay:
+            break  // handled above
+        case .cameraOnly:
+            if let cam = camera {
+                result = Self.fit(CIImage(cvPixelBuffer: cam), into: canvasRect, mode: .fill)
+                    .composited(over: result)
+            }
+        case .screenOnly:
+            if let s = screen {
+                result = Self.fit(CIImage(cvPixelBuffer: s), into: canvasRect, mode: screenFit)
+                    .composited(over: result)
+            }
+        case .splitScreenTop, .splitCamTop:
+            let topRect    = CGRect(x: 0, y: outH / 2, width: outW, height: outH / 2)
+            let bottomRect = CGRect(x: 0, y: 0,        width: outW, height: outH / 2)
+            // NOTE: CoreImage origin is bottom-left, so "topRect" = upper half.
+
+            let screenCI = screen.map { CIImage(cvPixelBuffer: $0) }
+            let cameraCI = camera.map { CIImage(cvPixelBuffer: $0) }
+
+            let screenSlot = layout == .splitScreenTop ? topRect : bottomRect
+            let cameraSlot = layout == .splitScreenTop ? bottomRect : topRect
+
+            if let s = screenCI {
+                result = Self.fit(s, into: screenSlot, mode: screenFit).composited(over: result)
+            }
+            if let c = cameraCI {
+                // Face cam always aspect-fill so faces are never letterboxed.
+                result = Self.fit(c, into: cameraSlot, mode: .fill).composited(over: result)
+            }
+        }
+
+        ciContext.render(result, to: out)
+    }
+
+    /// Scale `image` into `dest` according to `mode`, returning a positioned CIImage.
+    private static func fit(_ image: CIImage, into dest: CGRect, mode: ScreenFit) -> CIImage {
+        let srcW = image.extent.width
+        let srcH = image.extent.height
+        guard srcW > 0, srcH > 0 else { return image }
+
+        let scaleX = dest.width / srcW
+        let scaleY = dest.height / srcH
+        let scale: CGFloat
+        switch mode {
+        case .fit:    scale = min(scaleX, scaleY)
+        case .fill:   scale = max(scaleX, scaleY)
+        case .center: scale = 1  // keep native pixels; center-crop below
+        }
+
+        let scaled = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let scaledW = scaled.extent.width
+        let scaledH = scaled.extent.height
+        let dx = dest.midX - (scaled.extent.origin.x + scaledW / 2)
+        let dy = dest.midY - (scaled.extent.origin.y + scaledH / 2)
+        let positioned = scaled.transformed(by: CGAffineTransform(translationX: dx, y: dy))
+        return positioned.cropped(to: dest)
+    }
+
     // MARK: - Shape masking
 
     private func applyShapeMask(to image: CIImage, shape: PIPShape,

@@ -41,6 +41,15 @@ public enum LKey: String, CaseIterable {
     case confirmDeleteVideo, deleteAction, cancelAction, watchAction
     case openFolderInFinder, chooseThisFolder, selectFolderMessage, changeFolder
 
+    // Output format / layout
+    case formatSection, format
+    case formatYouTube, formatReel, formatSquare
+    case layout
+    case layoutPipOverlay, layoutSplitScreenTop, layoutSplitCamTop
+    case layoutCameraOnly, layoutScreenOnly
+    case screenFit, fitFit, fitFill, fitCenter
+    case faceCamHiddenNote
+
     // Settings
     case settings, general, language
     case quality, qualityLow, qualityMedium, qualityHigh
@@ -80,6 +89,17 @@ public enum L10n {
             .chooseThisFolder: "Choose this folder",
             .selectFolderMessage: "Select where to save videos",
             .changeFolder: "Change…",
+            .formatSection: "Format", .format: "Preset",
+            .formatYouTube: "YouTube", .formatReel: "Vertical 9:16", .formatSquare: "Square 1:1",
+            .layout: "Layout",
+            .layoutPipOverlay: "Screen + PIP",
+            .layoutSplitScreenTop: "Screen top / Cam bottom",
+            .layoutSplitCamTop: "Cam top / Screen bottom",
+            .layoutCameraOnly: "Camera only",
+            .layoutScreenOnly: "Screen only",
+            .screenFit: "Screen fit",
+            .fitFit: "Fit", .fitFill: "Fill", .fitCenter: "Center",
+            .faceCamHiddenNote: "Face-cam controls apply only to the YouTube preset.",
             .settings: "Settings", .general: "General", .language: "Language",
             .quality: "Quality",
             .qualityLow: "Low", .qualityMedium: "Medium", .qualityHigh: "High",
@@ -119,6 +139,17 @@ public enum L10n {
             .chooseThisFolder: "Elegir esta carpeta",
             .selectFolderMessage: "Selecciona la carpeta donde guardar los videos",
             .changeFolder: "Cambiar…",
+            .formatSection: "Formato", .format: "Preset",
+            .formatYouTube: "YouTube", .formatReel: "Vertical 9:16", .formatSquare: "Cuadrado 1:1",
+            .layout: "Distribución",
+            .layoutPipOverlay: "Pantalla + PIP",
+            .layoutSplitScreenTop: "Pantalla arriba / Cámara abajo",
+            .layoutSplitCamTop: "Cámara arriba / Pantalla abajo",
+            .layoutCameraOnly: "Solo cámara",
+            .layoutScreenOnly: "Solo pantalla",
+            .screenFit: "Encaje pantalla",
+            .fitFit: "Ajustar", .fitFill: "Llenar", .fitCenter: "Centrar",
+            .faceCamHiddenNote: "Los controles de cámara aplican solo al preset YouTube.",
             .settings: "Ajustes", .general: "General", .language: "Idioma",
             .quality: "Calidad",
             .qualityLow: "Baja", .qualityMedium: "Media", .qualityHigh: "Alta",

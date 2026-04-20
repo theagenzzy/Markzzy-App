@@ -9,7 +9,7 @@ struct PIPComposedPreview: View {
 
     var body: some View {
         GeometryReader { geo in
-            let aspect = screenAspect()
+            let aspect = canvasAspect()
             let canvas = fitted(aspect: aspect, in: geo.size)
             let canvasOrigin = CGPoint(
                 x: (geo.size.width - canvas.width) / 2,
@@ -17,15 +17,88 @@ struct PIPComposedPreview: View {
             )
 
             ZStack(alignment: .topLeading) {
-                backdrop
+                layoutBackdrop(canvas: canvas)
                     .frame(width: canvas.width, height: canvas.height)
                     .offset(x: canvasOrigin.x, y: canvasOrigin.y)
 
-                if model.selectedCamera != nil {
+                if model.layout == .pipOverlay, model.selectedCamera != nil {
                     pip(canvas: canvas, origin: canvasOrigin)
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+        }
+    }
+
+    /// Returns the SwiftUI preview for the current output-format + layout combo.
+    @ViewBuilder
+    private func layoutBackdrop(canvas: CGSize) -> some View {
+        switch model.layout {
+        case .pipOverlay:
+            backdrop
+        case .splitScreenTop:
+            VStack(spacing: 0) {
+                screenSlot.frame(height: canvas.height / 2)
+                cameraSlot.frame(height: canvas.height / 2)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.25), lineWidth: 1))
+        case .splitCamTop:
+            VStack(spacing: 0) {
+                cameraSlot.frame(height: canvas.height / 2)
+                screenSlot.frame(height: canvas.height / 2)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.25), lineWidth: 1))
+        case .cameraOnly:
+            cameraSlot
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.25), lineWidth: 1))
+        case .screenOnly:
+            screenSlotFitted
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.25), lineWidth: 1))
+        }
+    }
+
+    @ViewBuilder
+    private var screenSlot: some View {
+        screenSlotFitted
+    }
+
+    @ViewBuilder
+    private var screenSlotFitted: some View {
+        if let img = model.screenPreviewImage {
+            Image(decorative: img, scale: 1)
+                .resizable()
+                .aspectRatio(contentMode: model.screenFit == .fill || model.screenFit == .center ? .fill : .fit)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.black)
+                .clipped()
+        } else {
+            Color(NSColor.underPageBackgroundColor)
+                .overlay(
+                    VStack(spacing: 4) {
+                        Image(systemName: "display").font(.title2).foregroundStyle(.tertiary)
+                        Text(model.t(.screenPreview)).font(.caption).foregroundStyle(.tertiary)
+                    }
+                )
+        }
+    }
+
+    @ViewBuilder
+    private var cameraSlot: some View {
+        if model.selectedCamera != nil {
+            CameraPreview(session: model.previewSession)
+                .aspectRatio(contentMode: .fill)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+        } else {
+            Color.black.overlay(
+                VStack(spacing: 4) {
+                    Image(systemName: "video.slash").font(.title2).foregroundStyle(.tertiary)
+                    Text("—").font(.caption).foregroundStyle(.tertiary)
+                }
+            )
         }
     }
 
@@ -121,6 +194,14 @@ struct PIPComposedPreview: View {
         return aspect > ca
             ? CGSize(width: container.width, height: container.width / aspect)
             : CGSize(width: container.height * aspect, height: container.height)
+    }
+
+    private func canvasAspect() -> CGFloat {
+        switch model.outputFormat {
+        case .youtube:  return screenAspect()
+        case .reel916:  return 9.0 / 16.0
+        case .square11: return 1.0
+        }
     }
 
     private func screenAspect() -> CGFloat {

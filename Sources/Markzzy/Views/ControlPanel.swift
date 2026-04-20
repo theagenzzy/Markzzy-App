@@ -21,24 +21,34 @@ struct ControlPanel: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 14)
 
-                    GroupBox {
-                        VStack(spacing: 12) {
-                            shapeRow
-                            Divider()
-                            sizeRow
-                            Divider()
-                            positionRow
-                            Divider()
-                            borderStyleRow
-                            if model.pipBorder.style != .none {
-                                borderCustomRow
+                    formatBox
+                        .padding(.horizontal, 16)
+
+                    if model.outputFormat == .youtube {
+                        GroupBox {
+                            VStack(spacing: 12) {
+                                shapeRow
+                                Divider()
+                                sizeRow
+                                Divider()
+                                positionRow
+                                Divider()
+                                borderStyleRow
+                                if model.pipBorder.style != .none {
+                                    borderCustomRow
+                                }
                             }
+                            .padding(.vertical, 4)
+                        } label: {
+                            Label(model.t(.facecam), systemImage: "person.crop.circle")
                         }
-                        .padding(.vertical, 4)
-                    } label: {
-                        Label(model.t(.facecam), systemImage: "person.crop.circle")
+                        .padding(.horizontal, 16)
+                    } else if model.layout == .pipOverlay {
+                        Text(model.t(.faceCamHiddenNote))
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 16)
                     }
-                    .padding(.horizontal, 16)
 
                     GroupBox {
                         VStack(spacing: 10) {
@@ -107,6 +117,93 @@ struct ControlPanel: View {
             }
         }
         .transition(.opacity)
+    }
+
+    private var formatBox: some View {
+        GroupBox {
+            VStack(spacing: 12) {
+                HStack(spacing: 10) {
+                    Text(model.t(.format))
+                        .frame(width: 70, alignment: .leading)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        ForEach(OutputFormat.allCases) { formatButton($0) }
+                    }
+                    Spacer()
+                }
+
+                if model.outputFormat != .youtube {
+                    Divider()
+                    HStack(spacing: 10) {
+                        Text(model.t(.layout))
+                            .frame(width: 70, alignment: .leading)
+                            .foregroundStyle(.secondary)
+                        HStack(spacing: 6) {
+                            ForEach(nonPipLayouts) { layoutButton($0) }
+                        }
+                        Spacer()
+                    }
+                    if model.layout.usesScreen {
+                        Divider()
+                        HStack(spacing: 10) {
+                            Text(model.t(.screenFit))
+                                .frame(width: 70, alignment: .leading)
+                                .foregroundStyle(.secondary)
+                            Picker("", selection: $model.screenFit) {
+                                ForEach(ScreenFit.allCases) { fit in
+                                    Text(fit.localizedLabel(model.language)).tag(fit)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                        }
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+        } label: {
+            Label(model.t(.formatSection), systemImage: "aspectratio")
+        }
+    }
+
+    private var nonPipLayouts: [Layout] {
+        [.splitScreenTop, .splitCamTop, .cameraOnly, .screenOnly]
+    }
+
+    private func formatButton(_ f: OutputFormat) -> some View {
+        let active = model.outputFormat == f
+        return Button { model.outputFormat = f } label: {
+            HStack(spacing: 4) {
+                Image(systemName: f.sfSymbol).font(.system(size: 11, weight: .semibold))
+                Text(f.localizedLabel(model.language)).font(.caption)
+            }
+            .frame(height: 24)
+            .padding(.horizontal, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(active ? .white : .primary)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(active ? Color.accentColor : Color.secondary.opacity(0.12))
+        )
+    }
+
+    private func layoutButton(_ l: Layout) -> some View {
+        let active = model.layout == l
+        return Button { model.layout = l } label: {
+            Image(systemName: l.sfSymbol)
+                .font(.system(size: 13))
+                .frame(width: 30, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(active ? .white : .primary)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(active ? Color.accentColor : Color.secondary.opacity(0.12))
+        )
+        .help(l.localizedLabel(model.language))
     }
 
     private var micLevelMeter: some View {

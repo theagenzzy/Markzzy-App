@@ -10,6 +10,10 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
     private let microphone: AVCaptureDevice?
     private let compositor: PIPCompositor
     private let recorder: Recorder
+    private let format: OutputFormat
+    private let layout: Layout
+    private let screenFit: ScreenFit
+    private let canvasSize: CGSize
     private let queue = DispatchQueue(label: "markzzy.pipeline.sc")
     private let camQueue = DispatchQueue(label: "markzzy.pipeline.cam")
     private let audioQueue = DispatchQueue(label: "markzzy.pipeline.audio")
@@ -37,16 +41,24 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
                 pipShape: PIPShape,
                 pipBorder: PIPBorder,
                 output: URL,
-                bitrate: Int = 8_000_000) throws {
+                bitrate: Int = 8_000_000,
+                format: OutputFormat = .youtube,
+                layout: Layout = .pipOverlay,
+                screenFit: ScreenFit = .fit) throws {
         self.source = screen
         self.camera = camera
         self.microphone = microphone
+        self.format = format
+        self.layout = layout
+        self.screenFit = screenFit
+        let size = format.canvasSize(for: screen)
+        self.canvasSize = size
         self.compositor = PIPCompositor(
             position: pipPosition, size: pipSize,
             shape: pipShape, border: pipBorder
         )
         self.recorder = Recorder(config: .init(
-            width: screen.width, height: screen.height, fps: 30,
+            width: Int(size.width), height: Int(size.height), fps: 30,
             bitrate: bitrate,
             output: output, includesAudio: microphone != nil
         ))
@@ -55,7 +67,8 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
 
     public func start() async throws {
         try recorder.start()
-        outputPool = Self.makePool(width: source.width, height: source.height)
+        outputPool = Self.makePool(width: Int(canvasSize.width),
+                                   height: Int(canvasSize.height))
 
         camSession.beginConfiguration()
         camSession.sessionPreset = .high
@@ -100,7 +113,8 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
         var out: CVPixelBuffer?
         CVPixelBufferPoolCreatePixelBuffer(nil, pool, &out)
         guard let out else { return }
-        compositor.render(base: base, overlay: overlay, into: out)
+        compositor.render(screen: base, camera: overlay, into: out,
+                          layout: layout, screenFit: screenFit)
         recorder.appendVideo(out, pts: pts)
         onComposedFrame?(out)
     }

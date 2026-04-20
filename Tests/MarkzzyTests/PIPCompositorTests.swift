@@ -38,6 +38,63 @@ final class PIPCompositorTests: XCTestCase {
         }
     }
 
+    func testNewRenderPipOverlayMatchesCanvasSize() {
+        let base = makePixelBuffer(width: 1440, height: 900, color: (20, 20, 20))
+        let cam = makePixelBuffer(width: 640, height: 480, color: (200, 50, 50))
+        let out = makeOutputBuffer(width: 1440, height: 900)
+        let c = PIPCompositor(position: CGPoint(x: 0.5, y: 0.5),
+                              size: 0.22, shape: .circle, border: .none)
+        c.render(screen: base, camera: cam, into: out,
+                 layout: .pipOverlay, screenFit: .fit)
+        XCTAssertEqual(CVPixelBufferGetWidth(out), 1440)
+        XCTAssertEqual(CVPixelBufferGetHeight(out), 900)
+    }
+
+    func testSplitScreenTopLayout_verticalCanvas() {
+        let base = makePixelBuffer(width: 1440, height: 900, color: (100, 100, 100))
+        let cam = makePixelBuffer(width: 640, height: 480, color: (200, 0, 0))
+        let out = makeOutputBuffer(width: 1080, height: 1920)
+        let c = PIPCompositor()
+        c.render(screen: base, camera: cam, into: out,
+                 layout: .splitScreenTop, screenFit: .fill)
+        XCTAssertEqual(CVPixelBufferGetWidth(out), 1080)
+        XCTAssertEqual(CVPixelBufferGetHeight(out), 1920)
+    }
+
+    func testCameraOnlyLayout_squareCanvas() {
+        let cam = makePixelBuffer(width: 640, height: 480, color: (0, 200, 0))
+        let out = makeOutputBuffer(width: 1080, height: 1080)
+        let c = PIPCompositor()
+        c.render(screen: nil, camera: cam, into: out,
+                 layout: .cameraOnly, screenFit: .fit)
+        XCTAssertEqual(CVPixelBufferGetWidth(out), 1080)
+        XCTAssertEqual(CVPixelBufferGetHeight(out), 1080)
+    }
+
+    func testScreenOnlyLayout_respectsScreenFit() {
+        let base = makePixelBuffer(width: 1440, height: 900, color: (50, 50, 200))
+        let out = makeOutputBuffer(width: 1080, height: 1920)
+        let c = PIPCompositor()
+        for fit in ScreenFit.allCases {
+            c.render(screen: base, camera: nil, into: out,
+                     layout: .screenOnly, screenFit: fit)
+            XCTAssertEqual(CVPixelBufferGetWidth(out), 1080, "fit=\(fit)")
+            XCTAssertEqual(CVPixelBufferGetHeight(out), 1920, "fit=\(fit)")
+        }
+    }
+
+    private func makeOutputBuffer(width: Int, height: Int) -> CVPixelBuffer {
+        var pb: CVPixelBuffer?
+        let attrs: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: width,
+            kCVPixelBufferHeightKey as String: height,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+        ]
+        CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32BGRA, attrs as CFDictionary, &pb)
+        return pb!
+    }
+
     func testUpdateChangesOutput() {
         let base = makePixelBuffer(width: 800, height: 600, color: (0, 0, 0))
         let overlay = makePixelBuffer(width: 400, height: 300, color: (255, 0, 0))

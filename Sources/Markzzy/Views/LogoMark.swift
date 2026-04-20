@@ -40,13 +40,3 @@ struct LogoMark: View {
     }
 }
 
-#Preview {
-    HStack(spacing: 12) {
-        LogoMark(size: 16)
-        LogoMark(size: 32)
-        LogoMark(size: 64)
-        LogoMark(size: 128)
-    }
-    .padding()
-    .background(Color.gray.opacity(0.2))
-}

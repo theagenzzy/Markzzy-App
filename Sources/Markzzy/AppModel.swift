@@ -50,6 +50,24 @@ public final class AppModel: ObservableObject {
     @Published public var quality: RecordingQuality = AppModel.loadQuality() {
         didSet { UserDefaults.standard.set(quality.rawValue, forKey: Keys.quality) }
     }
+    @Published public var outputFormat: OutputFormat = AppModel.loadFormat() {
+        didSet {
+            UserDefaults.standard.set(outputFormat.rawValue, forKey: Keys.format)
+            // Auto-reconcile layout: only pipOverlay makes sense on YouTube,
+            // and pipOverlay doesn't make sense on vertical/square.
+            if outputFormat == .youtube, layout != .pipOverlay {
+                layout = .pipOverlay
+            } else if outputFormat != .youtube, layout == .pipOverlay {
+                layout = .splitScreenTop
+            }
+        }
+    }
+    @Published public var layout: Layout = AppModel.loadLayout() {
+        didSet { UserDefaults.standard.set(layout.rawValue, forKey: Keys.layout) }
+    }
+    @Published public var screenFit: ScreenFit = AppModel.loadScreenFit() {
+        didSet { UserDefaults.standard.set(screenFit.rawValue, forKey: Keys.screenFit) }
+    }
     @Published public var countdownEnabled: Bool = AppModel.loadCountdownEnabled() {
         didSet { UserDefaults.standard.set(countdownEnabled, forKey: Keys.countdownEnabled) }
     }
@@ -194,7 +212,10 @@ public final class AppModel: ObservableObject {
                 pipShape: pipShape,
                 pipBorder: pipBorder,
                 output: outURL,
-                bitrate: quality.bitrate
+                bitrate: quality.bitrate,
+                format: outputFormat,
+                layout: layout,
+                screenFit: screenFit
             )
             pipe.onComposedFrame = { [weak self] buffer in
                 self?.livePreview.push(buffer)
@@ -328,6 +349,25 @@ public final class AppModel: ObservableObject {
         static let countdownEnabled  = "countdownEnabled"
         static let rememberFaceCam   = "rememberFaceCam"
         static let faceCam           = "faceCamSettings"
+        static let format            = "outputFormat"
+        static let layout            = "layout"
+        static let screenFit         = "screenFit"
+    }
+
+    private static func loadFormat() -> OutputFormat {
+        if let raw = UserDefaults.standard.string(forKey: Keys.format),
+           let f = OutputFormat(rawValue: raw) { return f }
+        return .youtube
+    }
+    private static func loadLayout() -> Layout {
+        if let raw = UserDefaults.standard.string(forKey: Keys.layout),
+           let l = Layout(rawValue: raw) { return l }
+        return .pipOverlay
+    }
+    private static func loadScreenFit() -> ScreenFit {
+        if let raw = UserDefaults.standard.string(forKey: Keys.screenFit),
+           let s = ScreenFit(rawValue: raw) { return s }
+        return .fit
     }
 
     private static func loadLanguage() -> AppLanguage {
