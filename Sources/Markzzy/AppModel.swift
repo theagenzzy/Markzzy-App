@@ -68,6 +68,9 @@ public final class AppModel: ObservableObject {
     @Published public var screenAnchor: ScreenAnchor = AppModel.loadScreenAnchor() {
         didSet { UserDefaults.standard.set(screenAnchor.rawValue, forKey: Keys.screenAnchor) }
     }
+    @Published public var outputResolution: OutputResolution = AppModel.loadOutputResolution() {
+        didSet { UserDefaults.standard.set(outputResolution.rawValue, forKey: Keys.outputResolution) }
+    }
     @Published public var countdownEnabled: Bool = AppModel.loadCountdownEnabled() {
         didSet { UserDefaults.standard.set(countdownEnabled, forKey: Keys.countdownEnabled) }
     }
@@ -91,6 +94,10 @@ public final class AppModel: ObservableObject {
     @Published public var screenPreviewImage: CGImage?
     @Published public var countdownValue: Int?
     @Published public var micLevel: Float = 0
+    /// Flips true once the recording pipeline has produced its first composed
+    /// frame. Views use this to smoothly swap from the live preview layout to
+    /// a unified full-canvas render instead of showing a black gap.
+    @Published public var composedFrameActive: Bool = false
 
     private let permissions = Permissions()
     private var pipeline: CapturePipeline?
@@ -215,10 +222,15 @@ public final class AppModel: ObservableObject {
                 bitrate: quality.bitrate,
                 format: outputFormat,
                 layout: layout,
-                screenAnchor: screenAnchor
+                screenAnchor: screenAnchor,
+                resolution: outputResolution
             )
             pipe.onComposedFrame = { [weak self] buffer in
                 self?.livePreview.push(buffer)
+                Task { @MainActor in
+                    guard let self, !self.composedFrameActive else { return }
+                    self.composedFrameActive = true
+                }
             }
             try await pipe.start()
             pipeline = pipe
@@ -242,6 +254,7 @@ public final class AppModel: ObservableObject {
         state = .finishing
         timer?.invalidate(); timer = nil
         recordingStart = nil
+        composedFrameActive = false
         do {
             let url = try await pipeline?.stop()
             pipeline = nil
@@ -297,7 +310,7 @@ public final class AppModel: ObservableObject {
         if !layout.usesScreen { return nil }
         let sw = CGFloat(screen.width)
         let sh = CGFloat(screen.height)
-        let canvas = outputFormat.canvasSize(for: screen)
+        let canvas = outputFormat.canvasSize(for: screen, resolution: outputResolution)
         let slotAspect: CGFloat
         switch layout {
         case .pipOverlay, .screenOnly:
@@ -383,6 +396,7 @@ public final class AppModel: ObservableObject {
         static let format            = "outputFormat"
         static let layout            = "layout"
         static let screenAnchor      = "screenAnchor"
+        static let outputResolution  = "outputResolution"
     }
 
     private static func loadFormat() -> OutputFormat {
@@ -399,6 +413,11 @@ public final class AppModel: ObservableObject {
         if let raw = UserDefaults.standard.string(forKey: Keys.screenAnchor),
            let s = ScreenAnchor(rawValue: raw) { return s }
         return .center
+    }
+    private static func loadOutputResolution() -> OutputResolution {
+        if let raw = UserDefaults.standard.string(forKey: Keys.outputResolution),
+           let r = OutputResolution(rawValue: raw) { return r }
+        return .fullHd
     }
 
     private static func loadLanguage() -> AppLanguage {

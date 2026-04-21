@@ -3,6 +3,42 @@ import AVFoundation
 
 struct ControlPanel: View {
     @EnvironmentObject var model: AppModel
+    @State private var showResolutionMenu = false
+
+    enum PreviewMode: String, CaseIterable, Identifiable {
+        case canvas, instagram, tiktok
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .canvas: "Canvas"
+            case .instagram: "Instagram"
+            case .tiktok: "TikTok"
+            }
+        }
+        var sfSymbol: String {
+            switch self {
+            case .canvas:    "aspectratio"
+            case .instagram: "camera.aperture"
+            case .tiktok:    "music.note"
+            }
+        }
+        var subtitle: String {
+            switch self {
+            case .canvas:    "Plain output canvas"
+            case .instagram: "Reels chrome overlay"
+            case .tiktok:    "TikTok chrome overlay"
+            }
+        }
+        var chrome: PlatformChrome.Platform? {
+            switch self {
+            case .canvas: nil
+            case .instagram: .instagram
+            case .tiktok: .tiktok
+            }
+        }
+    }
+    @State private var previewMode: PreviewMode = .canvas
+    @State private var showPreviewMenu = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -17,6 +53,15 @@ struct ControlPanel: View {
                     ZStack {
                         PIPComposedPreview()
                             .environmentObject(model)
+                        if let chrome = previewMode.chrome, model.outputFormat == .reel916 {
+                            GeometryReader { geo in
+                                let canvasH = geo.size.height
+                                let canvasW = canvasH * 9 / 16  // 9:16 slot within the 220pt frame
+                                PlatformChrome(platform: chrome)
+                                    .frame(width: canvasW, height: canvasH)
+                                    .position(x: geo.size.width / 2, y: canvasH / 2)
+                            }
+                        }
                         if let n = model.countdownValue {
                             countdownOverlay(value: n)
                         }
@@ -117,6 +162,17 @@ struct ControlPanel: View {
         .onChange(of: model.selectedCamera) { _, new in
             model.applyPreviewCamera(new)
         }
+        .onChange(of: model.state) { _, new in
+            // Swap back to Canvas as soon as we enter prep/recording so the
+            // user never mistakes the IG/TikTok chrome overlay for actual
+            // content that will be burned into the output.
+            switch new {
+            case .preparing, .recording:
+                if previewMode != .canvas { previewMode = .canvas }
+            default:
+                break
+            }
+        }
     }
 
     // MARK: - Title bar
@@ -143,8 +199,10 @@ struct ControlPanel: View {
             VStack(spacing: 12) {
                 HStack(spacing: 10) {
                     Text(model.t(.format))
-                        .frame(width: 70, alignment: .leading)
+                        .frame(width: 95, alignment: .leading)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                     HStack(spacing: 6) {
                         ForEach(OutputFormat.allCases) { formatButton($0) }
                     }
@@ -155,8 +213,10 @@ struct ControlPanel: View {
                     Divider()
                     HStack(spacing: 10) {
                         Text(model.t(.layout))
-                            .frame(width: 70, alignment: .leading)
+                            .frame(width: 95, alignment: .leading)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
                         HStack(spacing: 6) {
                             ForEach(nonPipLayouts) { layoutButton($0) }
                         }
@@ -166,15 +226,14 @@ struct ControlPanel: View {
                         Divider()
                         HStack(spacing: 10) {
                             Text(model.t(.screenAnchor))
-                                .frame(width: 70, alignment: .leading)
+                                .frame(width: 95, alignment: .leading)
                                 .foregroundStyle(.secondary)
-                            Picker("", selection: $model.screenAnchor) {
-                                ForEach(ScreenAnchor.allCases) { a in
-                                    Text(a.localizedLabel(model.language)).tag(a)
-                                }
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                            HStack(spacing: 6) {
+                                ForEach(ScreenAnchor.allCases) { anchorButton($0) }
                             }
-                            .pickerStyle(.segmented)
-                            .labelsHidden()
+                            Spacer()
                         }
                     }
                 }
@@ -209,9 +268,9 @@ struct ControlPanel: View {
         .help(formatTooltip(f))
     }
 
-    /// Compact caption placed immediately above the preview canvas.
-    /// Groups the format name with its output dimensions so the user sees
-    /// the same metadata right where the canvas aspect changes shape.
+    /// Compact caption above the preview canvas. The dimensions become a Menu
+    /// for non-YouTube presets so the user can change resolution inline without
+    /// a dedicated row in the Format box.
     private var outputSummaryHeader: some View {
         HStack(spacing: 6) {
             Image(systemName: model.outputFormat.sfSymbol)
@@ -221,16 +280,128 @@ struct ControlPanel: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.primary)
             Text("·").foregroundStyle(.tertiary).font(.caption)
-            Text(outputDimsText)
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
+            Button { showResolutionMenu.toggle() } label: {
+                HStack(spacing: 4) {
+                    Text(outputDimsText)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $showResolutionMenu, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(OutputResolution.allCases) { r in
+                        resolutionMenuItem(r)
+                    }
+                }
+                .frame(width: 240)
+                .padding(.vertical, 4)
+            }
             Spacer()
+            if model.outputFormat == .reel916 {
+                Button {
+                    showPreviewMenu.toggle()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: previewMode.sfSymbol)
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("Preview:")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(previewMode.label)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(isRecording)
+                .popover(isPresented: $showPreviewMenu, arrowEdge: .bottom) {
+                    VStack(spacing: 0) {
+                        ForEach(PreviewMode.allCases) { m in
+                            previewModeRow(m)
+                        }
+                    }
+                    .frame(width: 240)
+                    .padding(.vertical, 4)
+                }
+            }
         }
+    }
+
+    private func previewModeRow(_ m: PreviewMode) -> some View {
+        let active = previewMode == m
+        return Button {
+            previewMode = m
+            showPreviewMenu = false
+        } label: {
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(active ? Color.accentColor : Color.secondary.opacity(0.15))
+                        .frame(width: 26, height: 26)
+                    Image(systemName: m.sfSymbol)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(active ? .white : .primary)
+                }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(m.label)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    Text(m.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if active {
+                    Image(systemName: "checkmark")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+            .contentShape(Rectangle())
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+        }
+        .buttonStyle(.plain)
+        .background(active ? Color.accentColor.opacity(0.08) : Color.clear)
+    }
+
+    private func resolutionMenuItem(_ r: OutputResolution) -> some View {
+        let active = model.outputResolution == r
+        return Button {
+            model.outputResolution = r
+            showResolutionMenu = false
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: active ? "checkmark" : "circle")
+                    .frame(width: 14)
+                    .foregroundStyle(active ? Color.accentColor : .clear)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(r.label).font(.body.weight(.medium))
+                    Text(r.tooltip).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .contentShape(Rectangle())
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+        }
+        .buttonStyle(.plain)
     }
 
     private var outputDimsText: String {
         guard let screen = model.selectedScreen else { return "—" }
-        let canvas = model.outputFormat.canvasSize(for: screen)
+        let canvas = model.outputFormat.canvasSize(
+            for: screen, resolution: model.outputResolution
+        )
         return "\(Int(canvas.width))×\(Int(canvas.height)) MP4"
     }
 
@@ -246,6 +417,25 @@ struct ControlPanel: View {
         case .reel916:  "TikTok · Instagram Reels · YouTube Shorts · Facebook Reels · Stories — 1080×1920"
         case .square11: "Instagram feed · Facebook feed — 1080×1080"
         }
+    }
+
+    private func anchorButton(_ a: ScreenAnchor) -> some View {
+        let active = model.screenAnchor == a
+        return Button { model.screenAnchor = a } label: {
+            HStack(spacing: 4) {
+                Image(systemName: a.sfSymbol).font(.system(size: 11, weight: .semibold))
+                Text(a.localizedLabel(model.language)).font(.caption)
+            }
+            .frame(height: 24)
+            .padding(.horizontal, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(active ? .white : .primary)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(active ? Color.accentColor : Color.secondary.opacity(0.12))
+        )
     }
 
     private func layoutButton(_ l: Layout) -> some View {
@@ -276,7 +466,9 @@ struct ControlPanel: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 16)
             }
-            .frame(width: 92, alignment: .leading)
+            .frame(width: 95, alignment: .leading)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
 
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
@@ -322,8 +514,10 @@ struct ControlPanel: View {
 
     private var shapeRow: some View {
         HStack(spacing: 10) {
-            Text(model.t(.shape)).frame(width: 70, alignment: .leading)
+            Text(model.t(.shape)).frame(width: 95, alignment: .leading)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
             HStack(spacing: 6) {
                 ForEach(PIPShape.allCases) { sh in
                     shapeButton(sh)
@@ -352,8 +546,10 @@ struct ControlPanel: View {
 
     private var sizeRow: some View {
         HStack(spacing: 10) {
-            Text(model.t(.size)).frame(width: 70, alignment: .leading)
+            Text(model.t(.size)).frame(width: 95, alignment: .leading)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
             Slider(value: $model.pipSize, in: 0.10...0.40)
             Text("\(Int(model.pipSize * 100))%")
                 .monospacedDigit()
@@ -364,8 +560,10 @@ struct ControlPanel: View {
 
     private var positionRow: some View {
         HStack(spacing: 10) {
-            Text(model.t(.position)).frame(width: 70, alignment: .leading)
+            Text(model.t(.position)).frame(width: 95, alignment: .leading)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
             HStack(spacing: 6) {
                 cornerButton(.topLeft,     icon: "arrow.up.left")
                 cornerButton(.topRight,    icon: "arrow.up.right")
@@ -413,8 +611,10 @@ struct ControlPanel: View {
 
     private var borderStyleRow: some View {
         HStack(spacing: 10) {
-            Text(model.t(.border)).frame(width: 70, alignment: .leading)
+            Text(model.t(.border)).frame(width: 95, alignment: .leading)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
             HStack(spacing: 6) {
                 ForEach(PIPBorder.Style.allCases) { borderStyleButton($0) }
             }
@@ -442,8 +642,10 @@ struct ControlPanel: View {
     private var borderCustomRow: some View {
         let style = model.pipBorder.style
         return HStack(spacing: 10) {
-            Text(model.t(.color)).frame(width: 70, alignment: .leading)
+            Text(model.t(.color)).frame(width: 95, alignment: .leading)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
             if style == .chrome {
                 Text(model.t(.metallicPreset))
                     .font(.caption)
@@ -488,7 +690,9 @@ struct ControlPanel: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 16)
             }
-            .frame(width: 92, alignment: .leading)
+            .frame(width: 95, alignment: .leading)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
             content()
                 .frame(maxWidth: .infinity)
         }

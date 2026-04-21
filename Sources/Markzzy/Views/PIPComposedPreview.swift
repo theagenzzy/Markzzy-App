@@ -65,7 +65,7 @@ struct PIPComposedPreview: View {
 
                 // Camera slot (always in the view tree — keeps the NSView alive).
                 cameraView(frame: c)
-                    .opacity(model.layout.usesCamera ? 1 : 0)
+                    .opacity((!model.composedFrameActive && model.layout.usesCamera) ? 1 : 0)
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
             .coordinateSpace(name: "canvas")
@@ -83,15 +83,13 @@ struct PIPComposedPreview: View {
     @ViewBuilder
     private var screenView: some View {
         if let img = model.screenPreviewImage {
-            // Aspect-fill with the chosen anchor so we show exactly the crop
-            // that will actually be recorded (no letterboxing, no stretching).
-            Image(decorative: img, scale: 1)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(maxWidth: .infinity, maxHeight: .infinity,
-                       alignment: screenAnchorAlignment)
-                .clipped()
-                .background(Color.black)
+            // Crop the screen preview exactly the way the compositor will —
+            // anchor-driven offset, not SwiftUI's default-center clipping.
+            GeometryReader { geo in
+                anchorCroppedImage(img: img, in: geo.size)
+            }
+            .clipped()
+            .background(Color.black)
         } else {
             Color(NSColor.underPageBackgroundColor)
                 .overlay(
@@ -103,12 +101,29 @@ struct PIPComposedPreview: View {
         }
     }
 
-    private var screenAnchorAlignment: Alignment {
-        switch model.screenAnchor {
-        case .center: return .center
-        case .left:   return .leading
-        case .right:  return .trailing
+    private func anchorCroppedImage(img: CGImage, in slot: CGSize) -> some View {
+        let srcAspect = CGFloat(img.width) / CGFloat(max(img.height, 1))
+        let slotAspect = slot.width / max(slot.height, 1)
+        let scaledW: CGFloat
+        let scaledH: CGFloat
+        if srcAspect > slotAspect {
+            scaledH = slot.height
+            scaledW = scaledH * srcAspect
+        } else {
+            scaledW = slot.width
+            scaledH = scaledW / srcAspect
         }
+        let offsetX: CGFloat
+        switch model.screenAnchor {
+        case .left:   offsetX = 0
+        case .center: offsetX = (slot.width - scaledW) / 2
+        case .right:  offsetX = slot.width - scaledW
+        }
+        let offsetY = (slot.height - scaledH) / 2
+        return Image(decorative: img, scale: 1)
+            .resizable()
+            .frame(width: scaledW, height: scaledH)
+            .offset(x: offsetX, y: offsetY)
     }
 
     // MARK: - Camera view (stable across layouts)
@@ -123,7 +138,12 @@ struct PIPComposedPreview: View {
                     .compositingGroup()
                     .mask(cameraMask)
                 if isOverlay, !model.pipShape.usesSoftMask, model.pipBorder.style != .none {
-                    ShapedBorderOverlay(shape: model.pipShape, border: model.pipBorder)
+                    ShapedBorderOverlay(
+                        shape: model.pipShape,
+                        border: model.pipBorder,
+                        side: min(c.width, c.height)
+                    )
+                    .frame(width: c.width, height: c.height)
                 }
             } else {
                 Color.black.overlay(
@@ -166,6 +186,11 @@ struct PIPComposedPreview: View {
     // MARK: - Layout-dependent frames
 
     private func screenFrame(canvas: CGSize, origin: CGPoint) -> CGRect {
+        // Once the pipeline starts emitting composed frames, switch to a
+        // unified full-canvas rendering (screen + cam already baked in). Until
+        // then — during the ~1s warmup between "start" and first frame —
+        // keep the split layout so the user still sees camera + screen.
+        if model.composedFrameActive { return CGRect(origin: origin, size: canvas) }
         switch model.layout {
         case .pipOverlay, .screenOnly:
             return CGRect(origin: origin, size: canvas)
@@ -181,6 +206,10 @@ struct PIPComposedPreview: View {
     }
 
     private func cameraFrame(canvas: CGSize, origin: CGPoint) -> CGRect {
+        // Camera is baked into the composed frame once pipeline is producing.
+        // Keep the slot visible during the warmup (last preview-session frame
+        // remains frozen on the AVCaptureVideoPreviewLayer, no black gap).
+        if model.composedFrameActive { return .zero }
         switch model.layout {
         case .pipOverlay:
             return pipRect(canvas: canvas, origin: origin)
@@ -252,17 +281,17 @@ struct PIPComposedPreview: View {
 }
 
 /// Border overlay that paints the stroke/gradient/glow on top of a clipped
-/// CameraPreview. Extracted so the PIP ZStack stays readable.
+/// CameraPreview. Side is passed in so the view never has to wait for a
+/// GeometryReader to measure — avoids a blank first frame when switching
+/// between layouts (e.g. coming back to YouTube from Reels).
 private struct ShapedBorderOverlay: View {
     let shape: PIPShape
     let border: PIPBorder
+    let side: CGFloat
 
     var body: some View {
-        GeometryReader { geo in
-            let side = min(geo.size.width, geo.size.height)
-            if let color = border.swiftUIColor {
-                content(color: color, width: border.lineWidth, side: side)
-            }
+        if let color = border.swiftUIColor {
+            content(color: color, width: border.lineWidth, side: side)
         }
     }
 

@@ -44,14 +44,15 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
                 bitrate: Int = 8_000_000,
                 format: OutputFormat = .youtube,
                 layout: Layout = .pipOverlay,
-                screenAnchor: ScreenAnchor = .center) throws {
+                screenAnchor: ScreenAnchor = .center,
+                resolution: OutputResolution = .fullHd) throws {
         self.source = screen
         self.camera = camera
         self.microphone = microphone
         self.format = format
         self.layout = layout
         self.screenAnchor = screenAnchor
-        let size = format.canvasSize(for: screen)
+        let size = format.canvasSize(for: screen, resolution: resolution)
         self.canvasSize = size
         self.compositor = PIPCompositor(
             position: pipPosition, size: pipSize,
@@ -80,6 +81,17 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
         }
         camSession.commitConfiguration()
         camSession.startRunning()
+
+        // Wait for the first camera frame before kicking off the SCStream —
+        // otherwise the first ~1s of video is composited with a black camera
+        // slot/PIP and that gets baked into the mp4. 2s timeout as fallback.
+        if camera != nil {
+            let deadline = Date().addingTimeInterval(2.0)
+            while Date() < deadline {
+                if isCamBufferReady() { break }
+                try? await Task.sleep(nanoseconds: 20_000_000)  // 20 ms
+            }
+        }
 
         let handler = SCHandler(owner: self)
         self.handler = handler
@@ -137,6 +149,12 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
         self.audioDelegate = delegate
         audioOut.setSampleBufferDelegate(delegate, queue: audioQueue)
         if camSession.canAddOutput(audioOut) { camSession.addOutput(audioOut) }
+    }
+
+    private func isCamBufferReady() -> Bool {
+        camBufferLock.lock()
+        defer { camBufferLock.unlock() }
+        return currentCamBuffer != nil
     }
 
     fileprivate func handleCamSample(_ sample: CMSampleBuffer) {

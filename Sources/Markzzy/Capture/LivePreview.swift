@@ -21,7 +21,22 @@ final class LivePreview: NSObject, SCStreamOutput, @unchecked Sendable {
     func start(for source: ScreenSource) async {
         await stop()
         guard let display = source.display else { return }
-        let filter = SCContentFilter(display: display, excludingWindows: [])
+        // Exclude our own app so the preview never shows an infinite mirror
+        // of Markzzy capturing itself capturing itself…
+        let selfApps: [SCRunningApplication] = await {
+            do {
+                let content = try await SCShareableContent.excludingDesktopWindows(
+                    false, onScreenWindowsOnly: true
+                )
+                let myBundle = Bundle.main.bundleIdentifier
+                return content.applications.filter {
+                    $0.bundleIdentifier == myBundle
+                }
+            } catch { return [] }
+        }()
+        let filter = SCContentFilter(display: display,
+                                     excludingApplications: selfApps,
+                                     exceptingWindows: [])
         let config = SCStreamConfiguration()
         let maxDim = 720
         let aspect = Double(source.width) / Double(max(source.height, 1))

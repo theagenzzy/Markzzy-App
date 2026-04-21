@@ -1,6 +1,47 @@
 import Foundation
 import CoreGraphics
 
+/// Target output pixel height for the short side of the encoded video.
+/// Scales linearly for all formats: for Reels (9:16) `shortSide` is the width,
+/// for Post (1:1) it's both sides, for YouTube it's ignored (native display).
+public enum OutputResolution: String, CaseIterable, Identifiable, Codable {
+    case hd720, fullHd, qhd, uhd4k
+
+    public var id: String { rawValue }
+
+    public var shortSide: Int {
+        switch self {
+        case .hd720:  720
+        case .fullHd: 1080
+        case .qhd:    1440
+        case .uhd4k:  2160
+        }
+    }
+
+    public var label: String {
+        switch self {
+        case .hd720:  "720p"
+        case .fullHd: "1080p"
+        case .qhd:    "1440p"
+        case .uhd4k:  "4K"
+        }
+    }
+
+    public var tooltip: String {
+        switch self {
+        case .hd720:  "HD · lighter file, faster upload"
+        case .fullHd: "Full HD · platform standard"
+        case .qhd:    "QHD · sharper, bigger file"
+        case .uhd4k:  "4K · max quality, heavy file"
+        }
+    }
+}
+
+private func roundEven(_ v: CGFloat) -> CGFloat {
+    let n = Int(v.rounded())
+    return CGFloat(n - (n % 2))
+}
+
 /// Target canvas preset for the recording.
 public enum OutputFormat: String, CaseIterable, Identifiable, Codable {
     case youtube   // native screen size (current YouTube / desktop flow)
@@ -9,13 +50,26 @@ public enum OutputFormat: String, CaseIterable, Identifiable, Codable {
 
     public var id: String { rawValue }
 
-    public func canvasSize(for screen: ScreenSource) -> CGSize {
+    public func canvasSize(for screen: ScreenSource,
+                           resolution: OutputResolution = .fullHd) -> CGSize {
         switch self {
-        case .youtube:  return CGSize(width: screen.width, height: screen.height)
-        case .reel916:  return CGSize(width: 1080, height: 1920)
-        case .square11: return CGSize(width: 1080, height: 1080)
+        case .youtube:
+            // Preserve the display's aspect, scale so the shorter axis matches
+            // the resolution tier. Round to even to satisfy H.264 encoder.
+            let aspect = CGFloat(screen.width) / CGFloat(max(screen.height, 1))
+            let h = CGFloat(resolution.shortSide)
+            let w = h * aspect
+            return CGSize(width: roundEven(w), height: roundEven(h))
+        case .reel916:
+            let w = CGFloat(resolution.shortSide)
+            return CGSize(width: w, height: w * 16 / 9)
+        case .square11:
+            let s = CGFloat(resolution.shortSide)
+            return CGSize(width: s, height: s)
         }
     }
+
+    public var supportsResolutionPicker: Bool { true }
 
     public var allowsFloatingPIP: Bool { self == .youtube }
 
