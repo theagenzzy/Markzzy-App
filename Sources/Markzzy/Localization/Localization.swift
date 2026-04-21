@@ -49,6 +49,7 @@ public enum LKey: String, CaseIterable {
     case layoutPipOverlay, layoutSplitScreenTop, layoutSplitCamTop
     case layoutCameraOnly, layoutScreenOnly
     case screenAnchor, anchorCenter, anchorLeft, anchorRight
+    case resolution
     case faceCamHiddenNote
 
     // Settings
@@ -57,6 +58,14 @@ public enum LKey: String, CaseIterable {
     case countdown, countdownOff, countdown3s
     case rememberFaceCam, outputFolder
     case videoRecorder  // subtitle under app name
+
+    // License activation
+    case licenseTitle, licenseSubtitle
+    case licenseEmail, licenseSendCode, licenseSending
+    case licenseCodePrompt, licenseCodeSent, licenseActivate, licenseActivating
+    case licenseResendCode, licenseWrongEmail
+    case licenseExpired, licenseNoSubscription
+    case licensePlanPrefix, licenseRenewsOn, licenseSignOut
 }
 
 public enum L10n {
@@ -101,8 +110,9 @@ public enum L10n {
             .layoutSplitCamTop: "Cam top / Screen bottom",
             .layoutCameraOnly: "Camera only",
             .layoutScreenOnly: "Screen only",
-            .screenAnchor: "Screen anchor",
+            .screenAnchor: "Crop",
             .anchorCenter: "Center", .anchorLeft: "Left", .anchorRight: "Right",
+            .resolution: "Resolution",
             .faceCamHiddenNote: "Face-cam controls apply only to the YouTube preset.",
             .settings: "Settings", .general: "General", .language: "Language",
             .quality: "Quality",
@@ -112,6 +122,22 @@ public enum L10n {
             .rememberFaceCam: "Remember face cam settings",
             .outputFolder: "Output folder",
             .videoRecorder: "Screen + face cam recorder",
+            .licenseTitle: "Activate Markzzy",
+            .licenseSubtitle: "Enter the email you used to subscribe — we'll send you a 6-digit code.",
+            .licenseEmail: "Email",
+            .licenseSendCode: "Send code",
+            .licenseSending: "Sending…",
+            .licenseCodePrompt: "Enter the 6-digit code we just sent you",
+            .licenseCodeSent: "Code sent to %@",
+            .licenseActivate: "Activate",
+            .licenseActivating: "Activating…",
+            .licenseResendCode: "Resend code",
+            .licenseWrongEmail: "Wrong email? Start over",
+            .licenseExpired: "License expired. Please reactivate.",
+            .licenseNoSubscription: "Don't have a subscription yet? Get one at markzzy.tech",
+            .licensePlanPrefix: "Plan:",
+            .licenseRenewsOn: "Renews on",
+            .licenseSignOut: "Sign out",
         ],
         .es: [
             .tabRecord: "Grabar", .tabLibrary: "Biblioteca", .tabSettings: "Ajustes",
@@ -154,8 +180,9 @@ public enum L10n {
             .layoutSplitCamTop: "Cámara arriba / Pantalla abajo",
             .layoutCameraOnly: "Solo cámara",
             .layoutScreenOnly: "Solo pantalla",
-            .screenAnchor: "Anclaje de pantalla",
+            .screenAnchor: "Recorte",
             .anchorCenter: "Centro", .anchorLeft: "Izquierda", .anchorRight: "Derecha",
+            .resolution: "Resolución",
             .faceCamHiddenNote: "Los controles de cámara aplican solo al preset YouTube.",
             .settings: "Ajustes", .general: "General", .language: "Idioma",
             .quality: "Calidad",
@@ -165,6 +192,22 @@ public enum L10n {
             .rememberFaceCam: "Recordar ajustes de cámara",
             .outputFolder: "Carpeta de salida",
             .videoRecorder: "Grabador de pantalla + cámara",
+            .licenseTitle: "Activar Markzzy",
+            .licenseSubtitle: "Ingresá el email que usaste para suscribirte — te enviamos un código de 6 dígitos.",
+            .licenseEmail: "Correo electrónico",
+            .licenseSendCode: "Enviar código",
+            .licenseSending: "Enviando…",
+            .licenseCodePrompt: "Ingresá el código de 6 dígitos que te enviamos",
+            .licenseCodeSent: "Código enviado a %@",
+            .licenseActivate: "Activar",
+            .licenseActivating: "Activando…",
+            .licenseResendCode: "Reenviar código",
+            .licenseWrongEmail: "¿Email incorrecto? Empezar de nuevo",
+            .licenseExpired: "Licencia expirada. Activá de nuevo.",
+            .licenseNoSubscription: "¿Todavía sin suscripción? Conseguí una en markzzy.tech",
+            .licensePlanPrefix: "Plan:",
+            .licenseRenewsOn: "Renueva el",
+            .licenseSignOut: "Cerrar sesión",
         ],
     ]
 

@@ -3,12 +3,24 @@ import SwiftUI
 @main
 struct MarkzzyApp: App {
     @StateObject private var model = AppModel()
+    @StateObject private var license = LicenseManager()
 
     var body: some Scene {
         WindowGroup("Markzzy") {
-            RootView()
-                .environmentObject(model)
-                .task { await model.bootstrap() }
+            Group {
+                switch license.status {
+                case .unknown:
+                    ProgressView().frame(width: 440, height: 380)
+                case .unactivated, .expired:
+                    LicenseActivationView(license: license)
+                        .environmentObject(model)
+                case .activated:
+                    RootView()
+                        .environmentObject(model)
+                        .environmentObject(license)
+                        .task { await model.bootstrap() }
+                }
+            }
         }
         .windowResizability(.contentSize)
     }
