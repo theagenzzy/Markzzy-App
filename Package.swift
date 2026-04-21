@@ -7,9 +7,15 @@ let package = Package(
     products: [
         .executable(name: "Markzzy", targets: ["Markzzy"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
+    ],
     targets: [
         .executableTarget(
             name: "Markzzy",
+            dependencies: [
+                .product(name: "Sparkle", package: "Sparkle"),
+            ],
             path: "Sources/Markzzy"
         ),
         .testTarget(

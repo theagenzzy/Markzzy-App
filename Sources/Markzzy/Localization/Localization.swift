@@ -66,6 +66,9 @@ public enum LKey: String, CaseIterable {
     case licenseResendCode, licenseWrongEmail
     case licenseExpired, licenseNoSubscription
     case licensePlanPrefix, licenseRenewsOn, licenseSignOut
+
+    // Updates
+    case checkForUpdates
 }
 
 public enum L10n {
@@ -138,6 +141,7 @@ public enum L10n {
             .licensePlanPrefix: "Plan:",
             .licenseRenewsOn: "Renews on",
             .licenseSignOut: "Sign out",
+            .checkForUpdates: "Check for Updates",
         ],
         .es: [
             .tabRecord: "Grabar", .tabLibrary: "Biblioteca", .tabSettings: "Ajustes",
@@ -208,6 +212,7 @@ public enum L10n {
             .licensePlanPrefix: "Plan:",
             .licenseRenewsOn: "Renueva el",
             .licenseSignOut: "Cerrar sesión",
+            .checkForUpdates: "Buscar actualizaciones",
         ],
     ]
 

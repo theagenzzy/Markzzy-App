@@ -1,0 +1,164 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build, sign, notarize, publish
+    runs-on: macos-14
+    env:
+      APP_NAME: Markzzy
+      BUNDLE_ID: tech.markzzy.Markzzy
+      FEED_URL: https://markzzy.tech/api/releases/appcast.xml
+      MIN_OS: "14.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.0.app
+
+      - name: Extract version from tag
+        id: ver
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build (release)
+        run: swift build -c release --arch arm64 --arch x86_64
+
+      - name: Assemble .app bundle
+        env:
+          VERSION: ${{ steps.ver.outputs.VERSION }}
+          SPARKLE_ED_PUBLIC_KEY: ${{ secrets.SPARKLE_ED_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          APP="dist/${APP_NAME}.app"
+          rm -rf dist && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp .build/apple/Products/Release/${APP_NAME} "$APP/Contents/MacOS/${APP_NAME}"
+          if [ -d Resources ]; then cp -R Resources/* "$APP/Contents/Resources/" || true; fi
+
+          # Sparkle's autoupdate helpers need to live inside the bundle.
+          SPARKLE_XCFRAMEWORK=$(find .build -type d -name Sparkle.framework -path '*release*' | head -n1)
+          if [ -n "$SPARKLE_XCFRAMEWORK" ]; then
+            mkdir -p "$APP/Contents/Frameworks"
+            cp -R "$SPARKLE_XCFRAMEWORK" "$APP/Contents/Frameworks/"
+          fi
+
+          cat > "$APP/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>${APP_NAME}</string>
+            <key>CFBundleDisplayName</key><string>${APP_NAME}</string>
+            <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
+            <key>CFBundleExecutable</key><string>${APP_NAME}</string>
+            <key>CFBundleVersion</key><string>${VERSION}</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>LSMinimumSystemVersion</key><string>${MIN_OS}</string>
+            <key>NSHighResolutionCapable</key><true/>
+            <key>NSCameraUsageDescription</key><string>Markzzy needs camera access to include your face cam in recordings.</string>
+            <key>NSMicrophoneUsageDescription</key><string>Markzzy needs microphone access to record audio.</string>
+            <key>NSScreenCaptureUsageDescription</key><string>Markzzy records your screen.</string>
+            <key>SUFeedURL</key><string>${FEED_URL}</string>
+            <key>SUPublicEDKey</key><string>${SPARKLE_ED_PUBLIC_KEY}</string>
+            <key>SUEnableAutomaticChecks</key><true/>
+          </dict>
+          </plist>
+          PLIST
+
+      - name: Import Developer ID certificate
+        env:
+          CERT_B64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ci-keychain-password
+        run: |
+          set -euo pipefail
+          echo "$CERT_B64" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import /tmp/cert.p12 -k build.keychain -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain >/dev/null
+          rm /tmp/cert.p12
+
+      - name: Codesign
+        env:
+          SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          APP="dist/${APP_NAME}.app"
+          /usr/bin/codesign --force --options runtime --timestamp \
+            --sign "$SIGNING_IDENTITY" --deep "$APP"
+
+      - name: Build DMG
+        env:
+          VERSION: ${{ steps.ver.outputs.VERSION }}
+        run: |
+          set -euo pipefail
+          DMG="dist/${APP_NAME}-${VERSION}.dmg"
+          hdiutil create -volname "${APP_NAME}" -srcfolder "dist/${APP_NAME}.app" \
+            -ov -format UDZO "$DMG"
+          echo "DMG_PATH=$DMG" >> "$GITHUB_ENV"
+
+      - name: Notarize DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          xcrun notarytool submit "$DMG_PATH" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$DMG_PATH"
+
+      - name: Sign DMG for Sparkle
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          SIGN_TOOL=$(find .build -type f -name sign_update | head -n1)
+          if [ -z "$SIGN_TOOL" ]; then
+            echo "sign_update not found — install Sparkle tools or vend them" >&2
+            exit 1
+          fi
+          SIG=$("$SIGN_TOOL" "$DMG_PATH" "$SPARKLE_ED_PRIVATE_KEY")
+          echo "SPARKLE_SIGNATURE=$SIG" >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release
+        id: gh_release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.DMG_PATH }}
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+
+      - name: Publish to Supabase app_releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUPABASE_URL: https://pydrckklrmajbsutioij.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          VERSION: ${{ steps.ver.outputs.VERSION }}
+        run: |
+          set -euo pipefail
+          DOWNLOAD_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/$(basename "$DMG_PATH")"
+          NOTES=$(gh release view "$GITHUB_REF_NAME" --json body -q .body 2>/dev/null || echo "")
+          curl -sS -X POST \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: resolution=merge-duplicates" \
+            "${SUPABASE_URL}/rest/v1/app_releases" \
+            -d "$(jq -n --arg v "$VERSION" --arg url "$DOWNLOAD_URL" \
+                        --arg sig "$SPARKLE_SIGNATURE" --arg notes "$NOTES" \
+                        --arg minos "$MIN_OS" \
+                        '{version:$v, download_url:$url, sha256:$sig, release_notes:$notes, min_os_version:$minos, required:false}')"

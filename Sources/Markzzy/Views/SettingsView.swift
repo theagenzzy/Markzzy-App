@@ -3,6 +3,7 @@ import AppKit
 
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var updates: UpdateManager
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,6 +27,10 @@ struct SettingsView: View {
             LogoMark(size: 22)
             Text(model.t(.settings)).font(.headline)
             Spacer()
+            Button(model.t(.checkForUpdates)) { updates.checkForUpdates() }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .disabled(!updates.canCheckForUpdates)
             Text("0.1.0").font(.caption).foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 16)

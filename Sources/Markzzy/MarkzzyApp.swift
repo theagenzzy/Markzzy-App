@@ -4,6 +4,7 @@ import SwiftUI
 struct MarkzzyApp: App {
     @StateObject private var model = AppModel()
     @StateObject private var license = LicenseManager()
+    @StateObject private var updates = UpdateManager()
 
     var body: some Scene {
         WindowGroup("Markzzy") {
@@ -18,11 +19,18 @@ struct MarkzzyApp: App {
                     RootView()
                         .environmentObject(model)
                         .environmentObject(license)
+                        .environmentObject(updates)
                         .task { await model.bootstrap() }
                 }
             }
         }
         .windowResizability(.contentSize)
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { updates.checkForUpdates() }
+                    .disabled(!updates.canCheckForUpdates)
+            }
+        }
     }
 }
 
