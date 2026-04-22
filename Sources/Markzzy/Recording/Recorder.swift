@@ -29,6 +29,45 @@ public final class Recorder {
     private let queue = DispatchQueue(label: "markzzy.recorder")
     private var frameCount: Int = 0
 
+    /// Single lock that serializes ALL writer access — appends, startSession,
+    /// markAsFinished, etc. This is the only correct way to avoid the
+    /// "appendSampleBuffer in non-writing state" abort on macOS, because
+    /// AVAssetWriterInput throws an NSException (uncatchable from Swift) if the
+    /// state changes mid-call. Hold this lock around every interaction with
+    /// the writer/inputs and the lock guarantees the state is consistent.
+    private let writerLock = NSLock()
+    private var stopped: Bool = false
+
+    /// Pause/resume implementation. While paused, all incoming samples are
+    /// dropped. On resume, `pausedDuration` accumulates so we can shift the PTS
+    /// of subsequent samples — this avoids a black/silent gap in the output and
+    /// keeps audio/video in sync. Uses the same writerLock for consistency.
+    private var paused: Bool = false
+    private var pausedAt: CMTime = .invalid
+    private var pausedDuration: CMTime = .zero
+
+    public var isPaused: Bool {
+        writerLock.lock(); defer { writerLock.unlock() }
+        return paused
+    }
+
+    public func pause() {
+        writerLock.lock(); defer { writerLock.unlock() }
+        guard !paused else { return }
+        paused = true
+        pausedAt = CMClockGetTime(CMClockGetHostTimeClock())
+    }
+
+    public func resume() {
+        writerLock.lock(); defer { writerLock.unlock() }
+        guard paused else { return }
+        let now = CMClockGetTime(CMClockGetHostTimeClock())
+        let delta = CMTimeSubtract(now, pausedAt)
+        pausedDuration = CMTimeAdd(pausedDuration, delta)
+        pausedAt = .invalid
+        paused = false
+    }
+
     public init(config: Config) { self.config = config }
 
     public func start() throws {
@@ -82,35 +121,86 @@ public final class Recorder {
     }
 
     public func appendVideo(_ pixelBuffer: CVPixelBuffer, pts: CMTime) {
-        guard let writer, let videoInput, let adaptor = pixelAdaptor else { return }
+        writerLock.lock()
+        defer { writerLock.unlock() }
+        if stopped { return }
+        guard let writer, writer.status == .writing,
+              let videoInput, let adaptor = pixelAdaptor else { return }
+        if paused { return }
+        let adjustedPts = pausedDuration == .zero ? pts : CMTimeSubtract(pts, pausedDuration)
         if startTime == nil {
-            startTime = pts
-            writer.startSession(atSourceTime: pts)
+            // startSession MUST happen before publishing startTime to other
+            // threads, otherwise audio sees startTime != nil and tries to
+            // append before the session is open → NSException.
+            writer.startSession(atSourceTime: adjustedPts)
+            startTime = adjustedPts
         }
-        if videoInput.isReadyForMoreMediaData {
-            adaptor.append(pixelBuffer, withPresentationTime: pts)
-            frameCount += 1
-        }
+        guard videoInput.isReadyForMoreMediaData else { return }
+        adaptor.append(pixelBuffer, withPresentationTime: adjustedPts)
+        frameCount += 1
     }
 
     public func appendAudio(_ sample: CMSampleBuffer) {
-        // Drop samples that arrive before the video session has started —
-        // AVAssetWriter will abort if we append before startSession(atSourceTime:).
-        guard startTime != nil else { return }
-        // Also drop samples whose PTS is before the session start (pre-roll).
-        let pts = CMSampleBufferGetPresentationTimeStamp(sample)
-        if let start = startTime, CMTimeCompare(pts, start) < 0 { return }
-        guard let audioInput, audioInput.isReadyForMoreMediaData else { return }
-        audioInput.append(sample)
+        writerLock.lock()
+        defer { writerLock.unlock() }
+        if stopped { return }
+        guard let writer, writer.status == .writing,
+              let audioInput,
+              let start = startTime else { return }
+        if paused { return }
+        guard audioInput.isReadyForMoreMediaData else { return }
+
+        let rawPts = CMSampleBufferGetPresentationTimeStamp(sample)
+        // Common case (never paused): no rewrite. Avoids unnecessary work AND
+        // sidesteps the format/DTS hazards of CMSampleBufferCreateCopyWithNewTiming
+        // for audio buffers (which historically caused -[AVAssetWriterInput
+        // appendSampleBuffer:] to throw).
+        if pausedDuration == .zero {
+            if CMTimeCompare(rawPts, start) < 0 { return }
+            audioInput.append(sample)
+            return
+        }
+
+        let adjustedPts = CMTimeSubtract(rawPts, pausedDuration)
+        if CMTimeCompare(adjustedPts, start) < 0 { return }
+
+        var timing = CMSampleTimingInfo(
+            duration: CMSampleBufferGetDuration(sample),
+            presentationTimeStamp: adjustedPts,
+            decodeTimeStamp: .invalid
+        )
+        var adjustedSample: CMSampleBuffer?
+        let status = CMSampleBufferCreateCopyWithNewTiming(
+            allocator: kCFAllocatorDefault,
+            sampleBuffer: sample,
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing,
+            sampleBufferOut: &adjustedSample
+        )
+        guard status == noErr, let out = adjustedSample else { return }
+        audioInput.append(out)
     }
 
     public func stop() async throws -> URL {
-        guard let writer else { throw Err.notStarted }
+        // Capture the writer + flip the stopped flag under the writer lock
+        // so any in-flight append on another queue sees `stopped` before we
+        // call markAsFinished + finishWriting. This is what makes the
+        // "audio sample arrives after stop" race safe.
+        writerLock.lock()
+        guard let writer else {
+            writerLock.unlock()
+            throw Err.notStarted
+        }
+        stopped = true
         videoInput?.markAsFinished()
         audioInput?.markAsFinished()
+        writerLock.unlock()
+
         await writer.finishWriting()
         let url = config.output
+        writerLock.lock()
         self.writer = nil
+        writerLock.unlock()
         return url
     }
 

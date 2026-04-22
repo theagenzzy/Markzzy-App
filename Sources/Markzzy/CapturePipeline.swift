@@ -24,6 +24,7 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
     private let audioOut = AVCaptureAudioDataOutput()
     private var currentCamBuffer: CVPixelBuffer?
     private var camBufferLock = NSLock()
+    private var camFrameCount: Int = 0
 
     private var outputPool: CVPixelBufferPool?
     private var handler: SCHandler?
@@ -82,14 +83,15 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
         camSession.commitConfiguration()
         camSession.startRunning()
 
-        // Wait for the first camera frame before kicking off the SCStream —
-        // otherwise the first ~1s of video is composited with a black camera
-        // slot/PIP and that gets baked into the mp4. 2s timeout as fallback.
+        // Brief camera warm-up before kicking off SCStream. The very first
+        // frames are sometimes dark while AE/AWB converge, but waiting ≥20
+        // frames (660ms) felt laggy. 6 frames (~200ms @ 30fps) hits the sweet
+        // spot: snappy start with negligible darkness in the mp4. Hard cap 1s.
         if camera != nil {
-            let deadline = Date().addingTimeInterval(2.0)
+            let deadline = Date().addingTimeInterval(1.0)
             while Date() < deadline {
-                if isCamBufferReady() { break }
-                try? await Task.sleep(nanoseconds: 20_000_000)  // 20 ms
+                if camFrameSeen() >= 6 { break }
+                try? await Task.sleep(nanoseconds: 15_000_000)  // 15 ms
             }
         }
 
@@ -105,6 +107,10 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
         camSession.stopRunning()
         return try await recorder.stop()
     }
+
+    public func pause() { recorder.pause() }
+    public func resume() { recorder.resume() }
+    public var isPaused: Bool { recorder.isPaused }
 
     public func updatePIP(position: CGPoint, size: CGFloat,
                           shape: PIPShape, border: PIPBorder) {
@@ -151,16 +157,17 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
         if camSession.canAddOutput(audioOut) { camSession.addOutput(audioOut) }
     }
 
-    private func isCamBufferReady() -> Bool {
+    private func camFrameSeen() -> Int {
         camBufferLock.lock()
         defer { camBufferLock.unlock() }
-        return currentCamBuffer != nil
+        return camFrameCount
     }
 
     fileprivate func handleCamSample(_ sample: CMSampleBuffer) {
         guard let pb = CMSampleBufferGetImageBuffer(sample) else { return }
         camBufferLock.lock()
         currentCamBuffer = pb
+        camFrameCount += 1
         camBufferLock.unlock()
     }
 

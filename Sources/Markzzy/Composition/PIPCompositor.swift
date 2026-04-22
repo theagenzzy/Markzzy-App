@@ -2,10 +2,24 @@ import CoreImage
 import CoreVideo
 import CoreGraphics
 import Foundation
+import Metal
 
 public final class PIPCompositor {
     private let ciContext: CIContext
     private let lock = NSLock()
+
+    /// Default CIContext backed by Metal so per-frame composition runs on the
+    /// GPU instead of the CPU. `cacheIntermediates` is off because every frame
+    /// is unique — caching would just balloon memory.
+    public static func makeDefaultContext() -> CIContext {
+        if let dev = MTLCreateSystemDefaultDevice() {
+            return CIContext(mtlDevice: dev, options: [
+                .cacheIntermediates: false,
+                .useSoftwareRenderer: false,
+            ])
+        }
+        return CIContext(options: [.cacheIntermediates: false])
+    }
 
     /// Normalized center of the PIP (0…1). (0,0) = top-left of the canvas.
     public var position: CGPoint
@@ -18,12 +32,12 @@ public final class PIPCompositor {
                 size: CGFloat = 0.22,
                 shape: PIPShape = .circle,
                 border: PIPBorder = .none,
-                ciContext: CIContext = CIContext()) {
+                ciContext: CIContext? = nil) {
         self.position = position
         self.size = size
         self.shape = shape
         self.border = border
-        self.ciContext = ciContext
+        self.ciContext = ciContext ?? Self.makeDefaultContext()
     }
 
     public func update(position: CGPoint, size: CGFloat, shape: PIPShape, border: PIPBorder) {

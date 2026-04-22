@@ -60,6 +60,148 @@ final class RecordingPipelineE2ETests: XCTestCase {
                                  expectsAudio: true)
     }
 
+    /// Reproduces the crash signature from the production crash log: rapid
+    /// stop+start cycles + audio samples arriving on the audio queue right as
+    /// the writer is being torn down. Without the writerLock fix, this test
+    /// triggers `-[AVAssetWriterInput appendSampleBuffer:]` to raise
+    /// NSInternalInconsistencyException → SIGABRT.
+    func testRapidStartStopDoesNotCrashOnAudioRace() async throws {
+        for cycle in 0..<5 {
+            let out = tempURL(name: "markzzy-race-\(cycle).mp4")
+            let recorder = Recorder(config: .init(
+                width: 320, height: 240, fps: 30, output: out, includesAudio: true
+            ))
+            try recorder.start()
+
+            // Push a few video frames so startSession() runs and audio is
+            // unblocked.
+            for i in 0..<3 {
+                let buf = makeSolid(width: 320, height: 240, r: 100, g: 100, b: 100)
+                recorder.appendVideo(buf, pts: CMTime(value: CMTimeValue(i), timescale: 30))
+            }
+
+            // Hammer audio appends from a background queue while we tear down
+            // on the main task — this is exactly the race that crashed in prod.
+            let audioWork = Task.detached { [recorder] in
+                let bursts = 30
+                for j in 0..<bursts {
+                    self.appendOneAudioPacket(to: recorder, atSample: j * 1024)
+                    // No sleep — maximize race window.
+                }
+            }
+
+            _ = try await recorder.stop()
+            await audioWork.value  // wait for the audio task to drain
+            XCTAssertTrue(FileManager.default.fileExists(atPath: out.path),
+                          "cycle \(cycle): output should exist")
+        }
+    }
+
+    /// Verifies pause/resume produces a valid MP4 and frames pushed during
+    /// pause are dropped (not encoded).
+    func testPauseResumeDropsFramesAndStillWritesValidFile() async throws {
+        let width = 320, height = 240, fps = 30
+        let out = tempURL(name: "markzzy-pause.mp4")
+        let recorder = Recorder(config: .init(
+            width: width, height: height, fps: fps, output: out, includesAudio: false
+        ))
+        try recorder.start()
+
+        // 30 frames before pause.
+        for i in 0..<30 {
+            let buf = makeSolid(width: width, height: height, r: 200, g: 0, b: 0)
+            recorder.appendVideo(buf, pts: CMTime(value: CMTimeValue(i), timescale: CMTimeScale(fps)))
+        }
+
+        XCTAssertFalse(recorder.isPaused)
+        recorder.pause()
+        XCTAssertTrue(recorder.isPaused)
+        let framesBeforeResume = recorder.writtenFrames
+
+        // 30 frames during pause — should ALL be dropped.
+        for i in 30..<60 {
+            let buf = makeSolid(width: width, height: height, r: 0, g: 200, b: 0)
+            recorder.appendVideo(buf, pts: CMTime(value: CMTimeValue(i), timescale: CMTimeScale(fps)))
+        }
+        XCTAssertEqual(recorder.writtenFrames, framesBeforeResume,
+                       "no frames should be written while paused")
+
+        recorder.resume()
+        XCTAssertFalse(recorder.isPaused)
+
+        // 30 more frames after resume.
+        for i in 60..<90 {
+            let buf = makeSolid(width: width, height: height, r: 0, g: 0, b: 200)
+            recorder.appendVideo(buf, pts: CMTime(value: CMTimeValue(i), timescale: CMTimeScale(fps)))
+        }
+
+        _ = try await recorder.stop()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: out.path))
+
+        let asset = AVURLAsset(url: out)
+        let videoTracks = try await asset.loadTracks(withMediaType: .video)
+        XCTAssertEqual(videoTracks.count, 1)
+    }
+
+    private func appendOneAudioPacket(to recorder: Recorder, atSample: Int) {
+        let sampleRate: Double = 44_100
+        let channels: UInt32 = 2
+        let count = 1024
+        var asbd = AudioStreamBasicDescription(
+            mSampleRate: sampleRate,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: 4 * channels,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: 4 * channels,
+            mChannelsPerFrame: channels,
+            mBitsPerChannel: 32,
+            mReserved: 0
+        )
+        var format: CMAudioFormatDescription?
+        CMAudioFormatDescriptionCreate(allocator: kCFAllocatorDefault,
+                                       asbd: &asbd,
+                                       layoutSize: 0, layout: nil,
+                                       magicCookieSize: 0, magicCookie: nil,
+                                       extensions: nil, formatDescriptionOut: &format)
+        guard let formatDesc = format else { return }
+        let byteCount = count * Int(channels) * 4
+        let bytes = UnsafeMutablePointer<Float>.allocate(capacity: count * Int(channels))
+        defer { bytes.deallocate() }
+        for s in 0..<count {
+            let v: Float = 0
+            bytes[s * 2] = v; bytes[s * 2 + 1] = v
+        }
+        var blockBuffer: CMBlockBuffer?
+        CMBlockBufferCreateWithMemoryBlock(
+            allocator: kCFAllocatorDefault, memoryBlock: nil,
+            blockLength: byteCount, blockAllocator: kCFAllocatorDefault,
+            customBlockSource: nil, offsetToData: 0,
+            dataLength: byteCount, flags: 0,
+            blockBufferOut: &blockBuffer)
+        guard let bb = blockBuffer else { return }
+        CMBlockBufferReplaceDataBytes(with: UnsafeMutableRawPointer(bytes),
+                                      blockBuffer: bb,
+                                      offsetIntoDestination: 0,
+                                      dataLength: byteCount)
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: CMTimeValue(count), timescale: CMTimeScale(sampleRate)),
+            presentationTimeStamp: CMTime(value: CMTimeValue(atSample), timescale: CMTimeScale(sampleRate)),
+            decodeTimeStamp: .invalid
+        )
+        var sample: CMSampleBuffer?
+        var size = Int(asbd.mBytesPerFrame)
+        CMSampleBufferCreate(
+            allocator: kCFAllocatorDefault, dataBuffer: bb, dataReady: true,
+            makeDataReadyCallback: nil, refcon: nil,
+            formatDescription: formatDesc,
+            sampleCount: CMItemCount(count),
+            sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+            sampleSizeEntryCount: 1, sampleSizeArray: &size,
+            sampleBufferOut: &sample)
+        if let s = sample { recorder.appendAudio(s) }
+    }
+
     func testPipelineWithoutAudioStillWorks() async throws {
         let width = 320, height = 240, frames = 30, fps = 30
         let out = tempURL(name: "markzzy-e2e-noaudio.mp4")

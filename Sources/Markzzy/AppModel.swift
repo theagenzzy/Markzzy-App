@@ -6,12 +6,48 @@ import CoreGraphics
 
 @MainActor
 public final class AppModel: ObservableObject {
-    public enum State: Equatable { case idle, preparing, recording, finishing, done(URL), failed(String) }
+    public enum State: Equatable { case idle, preparing, recording, paused, finishing, done(URL), failed(String) }
 
     @Published public var state: State = .idle
     @Published public var screenSources: [ScreenSource] = []
     @Published public var cameras: [AVCaptureDevice] = []
     @Published public var microphones: [AVCaptureDevice] = []
+
+    /// User-controlled filter that decides which devices show up in the UI
+    /// pickers. Persisted across launches.
+    @Published public var deviceFilter: DeviceFilter = AppModel.loadDeviceFilter() {
+        didSet {
+            UserDefaults.standard.set(deviceFilter.hideVirtualDevices == false, forKey: Keys.showAllDevices)
+            UserDefaults.standard.set(Array(deviceFilter.hiddenDeviceIDs), forKey: Keys.hiddenDeviceIDs)
+            // Re-enumerate so any newly-revealed/hidden device is reflected.
+            cameras = CameraCapture.listDevices(filter: deviceFilter)
+            microphones = AudioCapture.listDevices(filter: deviceFilter)
+            // Repair selection if currently selected device is now hidden.
+            if let cam = selectedCamera, !cameras.contains(where: { $0.uniqueID == cam.uniqueID }) {
+                selectedCamera = cameras.first
+            }
+            if let mic = selectedMic, !microphones.contains(where: { $0.uniqueID == mic.uniqueID }) {
+                selectedMic = microphones.first
+            }
+        }
+    }
+
+    public func hideDevice(uniqueID: String) {
+        var f = deviceFilter
+        f.hiddenDeviceIDs.insert(uniqueID)
+        deviceFilter = f
+    }
+
+    public func unhideDevice(uniqueID: String) {
+        var f = deviceFilter
+        f.hiddenDeviceIDs.remove(uniqueID)
+        deviceFilter = f
+    }
+
+    /// All currently-connected devices (ignoring filter), for the Settings UI
+    /// that lists hidden ones.
+    public var allConnectedCameras: [AVCaptureDevice] { CameraCapture.listAllDevices() }
+    public var allConnectedMicrophones: [AVCaptureDevice] { AudioCapture.listAllDevices() }
 
     @Published public var selectedScreen: ScreenSource? {
         didSet {
@@ -108,6 +144,8 @@ public final class AppModel: ObservableObject {
     private let micMonitor = MicMonitor()
     private var timer: Timer?
     private var recordingStart: Date?
+    private var deviceObservers: [NSObjectProtocol] = []
+    private var deviceChangeTask: Task<Void, Never>?
 
     // MARK: - Init / lifecycle
 
@@ -120,6 +158,12 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    deinit {
+        deviceChangeTask?.cancel()
+        let center = NotificationCenter.default
+        for token in deviceObservers { center.removeObserver(token) }
+    }
+
     public func bootstrap() async {
         await permissions.requestAll()
         await refreshDevices()
@@ -127,12 +171,95 @@ public final class AppModel: ObservableObject {
             await livePreview.start(for: screen)
         }
         applyMicMonitor()
+        observeDeviceChanges()
+    }
+
+    /// Listens for cameras / mics being plugged or unplugged at runtime
+    /// (USB cams, Continuity Camera, AirPods…). macOS sometimes fires the
+    /// notifications a few times in a row, so we debounce.
+    private func observeDeviceChanges() {
+        guard deviceObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+        let queue = OperationQueue.main
+        let handler: (Notification) -> Void = { [weak self] _ in
+            Task { @MainActor in self?.scheduleDeviceRescan() }
+        }
+        deviceObservers.append(
+            center.addObserver(
+                forName: .AVCaptureDeviceWasConnected, object: nil, queue: queue, using: handler
+            )
+        )
+        deviceObservers.append(
+            center.addObserver(
+                forName: .AVCaptureDeviceWasDisconnected, object: nil, queue: queue, using: handler
+            )
+        )
+    }
+
+    private func scheduleDeviceRescan() {
+        deviceChangeTask?.cancel()
+        deviceChangeTask = Task { @MainActor [weak self] in
+            // Debounce — give macOS a moment to settle when several devices
+            // appear at once (e.g. picking up a USB hub).
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.handleDeviceChange()
+        }
+    }
+
+    private func handleDeviceChange() {
+        let previousCameraID = selectedCamera?.uniqueID
+        let previousMicID = selectedMic?.uniqueID
+
+        let newCameras = CameraCapture.listDevices(filter: deviceFilter)
+        let newMicrophones = AudioCapture.listDevices(filter: deviceFilter)
+        let hadContinuity = cameras.contains(where: { $0.deviceType == .continuityCamera })
+        let hasContinuityNow = newCameras.contains(where: { $0.deviceType == .continuityCamera })
+
+        cameras = newCameras
+        microphones = newMicrophones
+
+        // Camera selection logic.
+        if let prevID = previousCameraID,
+           let stillThere = newCameras.first(where: { $0.uniqueID == prevID }) {
+            // Auto-promote a Continuity Camera that just appeared, but only if
+            // the user wasn't actively recording (we don't yank devices mid-take).
+            if !hadContinuity, hasContinuityNow, case .recording = state {
+                selectedCamera = stillThere
+            } else if !hadContinuity, hasContinuityNow {
+                selectedCamera = newCameras.first(where: { $0.deviceType == .continuityCamera })
+            } else {
+                selectedCamera = stillThere
+            }
+        } else {
+            // Previously selected camera disappeared (or none). Pick the best.
+            let next = newCameras.first(where: { $0.deviceType == .continuityCamera }) ?? newCameras.first
+            selectedCamera = next
+            if case .recording = state, previousCameraID != nil {
+                state = .failed("The selected camera was disconnected.")
+                Task { await stopRecording() }
+            }
+        }
+
+        // Mic selection logic — simpler: keep current if present, otherwise pick first.
+        if let prevID = previousMicID,
+           let stillThere = newMicrophones.first(where: { $0.uniqueID == prevID }) {
+            selectedMic = stillThere
+        } else {
+            selectedMic = newMicrophones.first
+            if case .recording = state, previousMicID != nil {
+                state = .failed("The selected microphone was disconnected.")
+                Task { await stopRecording() }
+            }
+        }
+
+        applyPreviewCamera(selectedCamera)
     }
 
     public func refreshDevices() async {
         screenSources = await ScreenCapture.listSources()
-        cameras = CameraCapture.listDevices()
-        microphones = AudioCapture.listDevices()
+        cameras = CameraCapture.listDevices(filter: deviceFilter)
+        microphones = AudioCapture.listDevices(filter: deviceFilter)
         if selectedScreen == nil { selectedScreen = screenSources.first }
         if selectedCamera == nil {
             selectedCamera = cameras.first(where: { $0.deviceType == .continuityCamera }) ?? cameras.first
@@ -185,10 +312,36 @@ public final class AppModel: ObservableObject {
             } else {
                 await startRecording()
             }
-        case .recording:
+        case .recording, .paused:
             await stopRecording()
         default: break
         }
+    }
+
+    public func pauseRecording() {
+        guard case .recording = state, let p = pipeline else { return }
+        p.pause()
+        // Freeze the elapsed counter at the current value by stashing the
+        // accumulated time into recordingStart's offset.
+        if let start = recordingStart {
+            elapsed = Date().timeIntervalSince(start)
+        }
+        timer?.invalidate(); timer = nil
+        state = .paused
+    }
+
+    public func resumeRecording() {
+        guard case .paused = state, let p = pipeline else { return }
+        p.resume()
+        // Reset the wall-clock anchor so the timer continues from `elapsed`.
+        recordingStart = Date().addingTimeInterval(-elapsed)
+        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let start = self.recordingStart else { return }
+                self.elapsed = Date().timeIntervalSince(start)
+            }
+        }
+        state = .recording
     }
 
     private func runCountdownThenStart() async {
@@ -205,8 +358,12 @@ public final class AppModel: ObservableObject {
             state = .failed("No screen source selected"); return
         }
         state = .preparing
+        // Camera preview must stop NOW (camera can only be in one session at a
+        // time, and the recording pipeline needs it). But keep `livePreview`
+        // (the screen SCStream) running so the screen stays visible during
+        // the camera warm-up — we'll swap it for composed frames once they
+        // start arriving.
         stopPreview()
-        await livePreview.stop()
         micMonitor.stop()
         let outURL = defaultOutputURL()
         do {
@@ -233,6 +390,9 @@ public final class AppModel: ObservableObject {
                 }
             }
             try await pipe.start()
+            // Composed frames are now flowing — stop the standalone screen
+            // SCStream so the two sources don't race on the preview.
+            await livePreview.stop()
             pipeline = pipe
             recordingStart = Date()
             elapsed = 0
@@ -246,8 +406,59 @@ public final class AppModel: ObservableObject {
         } catch {
             applyPreviewCamera(selectedCamera)
             applyMicMonitor()
-            state = .failed(error.localizedDescription)
+            state = .failed(Self.humanize(error))
         }
+    }
+
+    /// Maps low-level capture errors to user-facing strings, prefixed so the UI
+    /// can surface a System Settings deep-link when the cause is a denied
+    /// permission. Prefixes: `permission:screen:`, `permission:camera:`,
+    /// `permission:mic:`.
+    private static func humanize(_ error: Error) -> String {
+        let raw = error.localizedDescription
+        let lower = raw.lowercased()
+        if lower.contains("user declined")
+            || lower.contains("not authorized")
+            || lower.contains("permission")
+            || lower.contains("tcc") {
+            // We don't always know which permission — best-effort guess.
+            if lower.contains("camera") { return "permission:camera:\(raw)" }
+            if lower.contains("audio") || lower.contains("microphone") { return "permission:mic:\(raw)" }
+            return "permission:screen:\(raw)"
+        }
+        // Map ScreenCaptureKit's typed errors when we can.
+        let ns = error as NSError
+        if ns.domain == "com.apple.ScreenCaptureKit.SCStreamErrorDomain" {
+            switch ns.code {
+            case -3801: return "permission:screen:\(raw)"     // userDeclined
+            case -3804: return "permission:screen:\(raw)"     // failedToStart (often perm-related)
+            default: break
+            }
+        }
+        return raw
+    }
+
+    /// If the given failure message is permission-related, returns a deep-link
+    /// URL into the relevant System Settings pane. nil otherwise.
+    public static func settingsURL(for failureMessage: String) -> URL? {
+        if failureMessage.hasPrefix("permission:screen:") {
+            return URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+        }
+        if failureMessage.hasPrefix("permission:camera:") {
+            return URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera")
+        }
+        if failureMessage.hasPrefix("permission:mic:") {
+            return URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        }
+        return nil
+    }
+
+    /// Strips the `permission:KIND:` prefix for display.
+    public static func cleanFailureMessage(_ m: String) -> String {
+        if let r = m.range(of: "^permission:[a-z]+:", options: .regularExpression) {
+            return String(m[r.upperBound...])
+        }
+        return m
     }
 
     private func stopRecording() async {
@@ -397,6 +608,8 @@ public final class AppModel: ObservableObject {
         static let layout            = "layout"
         static let screenAnchor      = "screenAnchor"
         static let outputResolution  = "outputResolution"
+        static let showAllDevices    = "showAllDevices"
+        static let hiddenDeviceIDs   = "hiddenDeviceIDs"
     }
 
     private static func loadFormat() -> OutputFormat {
@@ -440,6 +653,12 @@ public final class AppModel: ObservableObject {
 
     private static func loadRememberFaceCam() -> Bool {
         UserDefaults.standard.object(forKey: Keys.rememberFaceCam) as? Bool ?? true
+    }
+
+    private static func loadDeviceFilter() -> DeviceFilter {
+        let showAll = UserDefaults.standard.bool(forKey: Keys.showAllDevices)
+        let hidden = (UserDefaults.standard.array(forKey: Keys.hiddenDeviceIDs) as? [String]) ?? []
+        return DeviceFilter(hideVirtualDevices: !showAll, hiddenDeviceIDs: Set(hidden))
     }
 
     // MARK: - Face cam persistence

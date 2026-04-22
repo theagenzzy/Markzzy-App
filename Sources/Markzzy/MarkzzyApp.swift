@@ -5,9 +5,10 @@ struct MarkzzyApp: App {
     @StateObject private var model = AppModel()
     @StateObject private var license = LicenseManager()
     @StateObject private var updates = UpdateManager()
+    @State private var lastHandledToken: String?
 
     var body: some Scene {
-        WindowGroup("Markzzy") {
+        Window("Markzzy", id: "main") {
             Group {
                 switch license.status {
                 case .unknown:
@@ -22,6 +23,19 @@ struct MarkzzyApp: App {
                         .environmentObject(updates)
                         .task { await model.bootstrap() }
                 }
+            }
+            .onOpenURL { url in
+                guard url.scheme == "markzzy", url.host == "activate" else { return }
+                let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+                guard let token = comps?.queryItems?.first(where: { $0.name == "token" })?.value
+                else { return }
+                // Skip if we already processed this token in this session, or if
+                // we're already activated (the link is one-shot — a re-fire from
+                // the browser/email client would just hit "link_used").
+                if lastHandledToken == token { return }
+                if case .activated = license.status { return }
+                lastHandledToken = token
+                Task { await license.redeem(token: token) }
             }
         }
         .windowResizability(.contentSize)

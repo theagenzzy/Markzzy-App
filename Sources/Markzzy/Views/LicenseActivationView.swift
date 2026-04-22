@@ -6,92 +6,275 @@ struct LicenseActivationView: View {
 
     @State private var step: Step = .email
     @State private var email: String = ""
-    @State private var code: String = ""
     @State private var isBusy: Bool = false
+    @FocusState private var emailFocused: Bool
 
-    private enum Step { case email, code }
+    private enum Step { case welcome, email, sent }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("Markzzy")
-                .font(.system(size: 22, weight: .bold))
+        ZStack {
+            backgroundLayer
 
-            Text(model.t(.licenseTitle))
-                .font(.title2.bold())
-            Text(model.t(.licenseSubtitle))
-                .foregroundStyle(.secondary)
-                .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 14) {
+                headerBar
 
-            if license.status == .expired {
-                Label(model.t(.licenseExpired), systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                    .font(.callout)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(headerTitle)
+                        .font(.title2.weight(.semibold))
+                    Text(headerSubtitle)
+                        .foregroundStyle(.secondary)
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if license.status == .expired {
+                    Label(model.t(.licenseExpired), systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .font(.callout)
+                }
+
+                Group {
+                    switch step {
+                    case .welcome: welcomeStep
+                    case .email:   emailStep
+                    case .sent:    sentStep
+                    }
+                }
+
+                if let err = license.lastError {
+                    Text(err)
+                        .foregroundStyle(.red)
+                        .font(.footnote)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+
+                footer
             }
-
-            switch step {
-            case .email: emailStep
-            case .code:  codeStep
-            }
-
-            if let err = license.lastError {
-                Text(err)
-                    .foregroundStyle(.red)
-                    .font(.footnote)
-            }
-
-            Spacer(minLength: 0)
-
-            Text(model.t(.licenseNoSubscription))
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+            .padding(.horizontal, 28)
+            .padding(.top, 22)
+            .padding(.bottom, 0)
         }
-        .padding(32)
         .frame(width: 440, height: 380)
+        .onAppear {
+            if email.isEmpty, !license.pendingEmail.isEmpty {
+                email = license.pendingEmail
+            }
+            if step == .email, license.hasRememberedEmail {
+                step = .welcome
+            }
+            if step == .email {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    emailFocused = true
+                }
+            }
+        }
     }
 
+    // MARK: - Background
+
+    private var backgroundLayer: some View {
+        LinearGradient(
+            colors: [
+                Color(nsColor: .windowBackgroundColor),
+                Color(nsColor: .underPageBackgroundColor),
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .overlay(alignment: .top) {
+            // Subtle brand-tinted glow at the top to ground the logo.
+            RadialGradient(
+                colors: [
+                    Color.accentColor.opacity(0.10),
+                    Color.clear,
+                ],
+                center: .top,
+                startRadius: 0,
+                endRadius: 220
+            )
+            .allowsHitTesting(false)
+        }
+        .ignoresSafeArea()
+    }
+
+    // MARK: - Header
+
+    private var headerBar: some View {
+        HStack(alignment: .center, spacing: 10) {
+            LogoMark(size: 26)
+            Text("Markzzy")
+                .font(.system(size: 20, weight: .semibold))
+                .tracking(0.2)
+            Spacer()
+            Picker("", selection: $model.language) {
+                ForEach(AppLanguage.allCases) { lang in
+                    Text(lang.displayName).tag(lang)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .frame(width: 110)
+        }
+    }
+
+    // MARK: - Footer
+
+    private var footer: some View {
+        VStack(spacing: 0) {
+            Divider()
+                .opacity(0.6)
+            HStack(spacing: 4) {
+                Text(model.t(.licenseNoSubscriptionPrefix))
+                    .foregroundStyle(.secondary)
+                Link(model.t(.licenseGetItHere), destination: URL(string: "https://markzzy.tech")!)
+            }
+            .font(.footnote)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+        }
+        .padding(.horizontal, -28) // extend divider to window edges
+    }
+
+    private var headerTitle: String {
+        step == .welcome ? model.t(.licenseWelcomeBack) : model.t(.licenseTitle)
+    }
+
+    private var headerSubtitle: String {
+        step == .welcome ? model.t(.licenseWelcomeBackSubtitle) : model.t(.licenseSubtitle)
+    }
+
+    // MARK: - Welcome step
+
+    private var welcomeStep: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "person.crop.circle.badge.checkmark")
+                    .font(.system(size: 20))
+                    .foregroundStyle(.tint)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(license.pendingEmail)
+                        .font(.callout.weight(.semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(Color.primary.opacity(0.04))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+            )
+
+            Button(action: runSendCode) {
+                Text(isBusy ? model.t(.licenseSending) : model.t(.licenseSendSignInLink))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 3)
+            }
+            .keyboardShortcut(.defaultAction)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(isBusy)
+
+            HStack {
+                Spacer()
+                Button(model.t(.licenseUseDifferentEmail)) {
+                    license.forgetEmail()
+                    email = ""
+                    step = .email
+                    license.lastError = nil
+                }
+                .buttonStyle(.link)
+                .font(.footnote)
+                .disabled(isBusy)
+            }
+        }
+    }
+
+    // MARK: - Email step
+
     private var emailStep: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             Text(model.t(.licenseEmail))
-                .font(.callout)
+                .font(.footnote.weight(.medium))
                 .foregroundStyle(.secondary)
-            TextField("you@example.com", text: $email)
-                .textFieldStyle(.roundedBorder)
-                .disableAutocorrection(true)
-                .onSubmit(runSendCode)
+                .textCase(.uppercase)
+                .tracking(0.4)
+
+            HStack(spacing: 8) {
+                Image(systemName: "envelope")
+                    .foregroundStyle(.secondary)
+                    .font(.system(size: 13))
+                TextField("you@example.com", text: $email)
+                    .textFieldStyle(.plain)
+                    .font(.callout)
+                    .disableAutocorrection(true)
+                    .focused($emailFocused)
+                    .onSubmit(runSendCode)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 9)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color(nsColor: .textBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(
+                        emailFocused ? Color.accentColor.opacity(0.55) : Color.primary.opacity(0.12),
+                        lineWidth: emailFocused ? 1.5 : 1
+                    )
+            )
+
             Button(action: runSendCode) {
                 Text(isBusy ? model.t(.licenseSending) : model.t(.licenseSendCode))
                     .frame(maxWidth: .infinity)
+                    .padding(.vertical, 3)
             }
             .keyboardShortcut(.defaultAction)
             .buttonStyle(.borderedProminent)
-            .disabled(isBusy || email.trimmingCharacters(in: .whitespaces).isEmpty)
+            .controlSize(.large)
+            .disabled(isBusy || !isValidEmail(email))
+            .padding(.top, 4)
         }
     }
 
-    private var codeStep: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(String(format: model.t(.licenseCodeSent), license.pendingEmail))
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            Text(model.t(.licenseCodePrompt))
-                .font(.callout)
-            TextField("123456", text: $code)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 22, weight: .semibold, design: .monospaced))
-                .onSubmit(runVerify)
-                .onChange(of: code) { _, newValue in
-                    let digits = newValue.filter(\.isNumber)
-                    if digits != newValue { code = digits }
-                    if digits.count > 6 { code = String(digits.prefix(6)) }
-                }
-            Button(action: runVerify) {
-                Text(isBusy ? model.t(.licenseActivating) : model.t(.licenseActivate))
-                    .frame(maxWidth: .infinity)
+    private func isValidEmail(_ s: String) -> Bool {
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.contains("@") && trimmed.contains(".")
+    }
+
+    // MARK: - Sent step
+
+    private var sentStep: some View {
+        VStack(alignment: .center, spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Color.accentColor.opacity(0.12))
+                    .frame(width: 56, height: 56)
+                Image(systemName: "envelope.badge.fill")
+                    .font(.system(size: 26, weight: .regular))
+                    .foregroundStyle(.tint)
             }
-            .keyboardShortcut(.defaultAction)
-            .buttonStyle(.borderedProminent)
-            .disabled(isBusy || code.count != 6)
+            .padding(.top, 2)
+
+            VStack(spacing: 4) {
+                Text(String(format: model.t(.licenseLinkSent), license.pendingEmail))
+                    .font(.callout)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(model.t(.licenseLinkOpenFromMac))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             HStack {
                 Button(model.t(.licenseResendCode)) { Task { await resend() } }
@@ -100,14 +283,15 @@ struct LicenseActivationView: View {
                 Spacer()
                 Button(model.t(.licenseWrongEmail)) {
                     step = .email
-                    code = ""
                     license.lastError = nil
                 }
                 .buttonStyle(.link)
                 .disabled(isBusy)
             }
             .font(.footnote)
+            .padding(.top, 2)
         }
+        .frame(maxWidth: .infinity)
     }
 
     private func runSendCode() {
@@ -115,21 +299,13 @@ struct LicenseActivationView: View {
             isBusy = true
             defer { isBusy = false }
             let ok = await license.sendCode(email: email)
-            if ok { step = .code }
-        }
-    }
-
-    private func runVerify() {
-        Task { @MainActor in
-            isBusy = true
-            defer { isBusy = false }
-            _ = await license.verify(email: license.pendingEmail, code: code)
+            if ok { step = .sent }
         }
     }
 
     private func resend() async {
         isBusy = true
         defer { isBusy = false }
-        _ = await license.sendCode(email: license.pendingEmail)
+        _ = await license.sendCode(email: license.pendingEmail.isEmpty ? email : license.pendingEmail)
     }
 }

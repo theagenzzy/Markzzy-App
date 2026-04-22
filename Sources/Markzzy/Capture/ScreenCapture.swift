@@ -43,9 +43,15 @@ public enum ScreenCapture {
         let config = SCStreamConfiguration()
         config.width = source.width
         config.height = source.height
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
+        // 30fps caps both capture AND composition work — recorder writes at 30fps
+        // anyway, so going higher just burned CPU on frames the encoder ignored.
+        // Going to 30fps roughly halves the per-frame load for the screen leg.
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 30)
         config.pixelFormat = kCVPixelFormatType_32BGRA
         config.showsCursor = true
+        // queueDepth defaults to 8; bumping to 6 keeps a small backlog without
+        // letting late frames pile up if the encoder briefly stalls.
+        config.queueDepth = 6
         let stream = SCStream(filter: filter, configuration: config, delegate: nil)
         try stream.addStreamOutput(output, type: .screen, sampleHandlerQueue: queue)
         return stream

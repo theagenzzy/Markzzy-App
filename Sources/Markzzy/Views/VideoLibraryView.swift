@@ -9,11 +9,54 @@ struct VideoLibraryView: View {
     @State private var thumbnails: [URL: NSImage] = [:]
     @State private var aspects: [URL: CGFloat] = [:]
     @State private var pendingDelete: VideoItem?
+    @State private var isSelecting: Bool = false
+    @State private var selected: Set<URL> = []
+    @State private var pendingBulkDelete: Bool = false
 
-    private let columns = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12),
-    ]
+    private enum LibraryFormat: Int, CaseIterable, Hashable {
+        case youtube, reel, post
+
+        var titleKey: LKey {
+            switch self {
+            case .youtube: .formatYouTube
+            case .reel:    .formatReel
+            case .post:    .formatSquare
+            }
+        }
+
+        var columns: [GridItem] {
+            switch self {
+            case .youtube, .post:
+                return [
+                    GridItem(.flexible(), spacing: 12),
+                    GridItem(.flexible(), spacing: 12),
+                ]
+            case .reel:
+                return [
+                    GridItem(.flexible(), spacing: 10),
+                    GridItem(.flexible(), spacing: 10),
+                    GridItem(.flexible(), spacing: 10),
+                ]
+            }
+        }
+
+        static func from(aspect: CGFloat) -> LibraryFormat {
+            if aspect >= 1.3 { return .youtube }
+            if aspect <= 0.75 { return .reel }
+            return .post
+        }
+    }
+
+    @State private var filter: LibraryFormat = .youtube
+
+    private func format(for item: VideoItem) -> LibraryFormat {
+        guard let a = aspects[item.url] else { return .youtube }
+        return .from(aspect: a)
+    }
+
+    private func items(in fmt: LibraryFormat) -> [VideoItem] {
+        items.filter { format(for: $0) == fmt }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,21 +67,34 @@ struct VideoLibraryView: View {
             if items.isEmpty {
                 emptyState
             } else {
-                ScrollView {
-                    LazyVGrid(columns: columns, spacing: 12) {
-                        ForEach(items) { item in
-                            VideoCard(
-                                item: item,
-                                thumbnail: thumbnails[item.url],
-                                aspect: aspects[item.url] ?? 16.0 / 9.0,
-                                onPreview: { NSWorkspace.shared.open(item.url) },
-                                onReveal: { model.revealInFinder(item.url) },
-                                onDelete: { pendingDelete = item }
-                            )
-                            .task { await loadThumbnail(for: item) }
+                formatTabs
+                Divider()
+                let visible = items(in: filter)
+                if visible.isEmpty {
+                    emptyFilterState
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: filter.columns, spacing: 12) {
+                            ForEach(visible) { item in
+                                VideoCard(
+                                    item: item,
+                                    thumbnail: thumbnails[item.url],
+                                    aspect: aspects[item.url] ?? 16.0 / 9.0,
+                                    selectable: isSelecting,
+                                    isSelected: selected.contains(item.url),
+                                    onPreview: { handleTap(item) },
+                                    onReveal: { model.revealInFinder(item.url) },
+                                    onDelete: { pendingDelete = item }
+                                )
+                                .task { await loadThumbnail(for: item) }
+                            }
                         }
+                        .padding(16)
                     }
-                    .padding(16)
+                }
+                if isSelecting {
+                    Divider()
+                    selectionBar
                 }
             }
         }
@@ -67,14 +123,53 @@ struct VideoLibraryView: View {
         }
     }
 
+    private var formatTabs: some View {
+        HStack(spacing: 8) {
+            Picker("", selection: $filter) {
+                ForEach(LibraryFormat.allCases, id: \.rawValue) { fmt in
+                    Text(model.t(fmt.titleKey)).tag(fmt)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
+    private var emptyFilterState: some View {
+        VStack(spacing: 8) {
+            Spacer()
+            Image(systemName: "tray")
+                .font(.system(size: 28))
+                .foregroundStyle(.secondary)
+            Text(model.t(.noRecordingsYet))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private var header: some View {
         HStack(spacing: 8) {
             LogoMark(size: 22)
             Text(model.t(.library)).font(.headline)
             Spacer()
-            Text("\(items.count) \(items.count == 1 ? model.t(.videoCount) : model.t(.videosCount))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if !isSelecting {
+                Text("\(items.count) \(items.count == 1 ? model.t(.videoCount) : model.t(.videosCount))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Button {
+                isSelecting.toggle()
+                if !isSelecting { selected.removeAll() }
+            } label: {
+                Text(isSelecting ? model.t(.doneAction) : model.t(.selectAction))
+                    .font(.caption.weight(.medium))
+            }
+            .buttonStyle(.borderless)
+            .disabled(items.isEmpty)
             Button { reload() } label: {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 12, weight: .semibold))
@@ -86,10 +181,69 @@ struct VideoLibraryView: View {
                     .fill(Color.secondary.opacity(0.12))
             )
             .help(model.t(.reload))
+            AccountMenu()
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(.bar)
+    }
+
+    private var selectionBar: some View {
+        HStack(spacing: 10) {
+            Text("\(selected.count) \(selected.count == 1 ? model.t(.videoCount) : model.t(.videosCount))")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button(model.t(.cancelAction)) {
+                isSelecting = false
+                selected.removeAll()
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            Button(role: .destructive) {
+                pendingBulkDelete = true
+            } label: {
+                Text(String(format: model.t(.deleteCountAction), selected.count))
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .controlSize(.small)
+            .disabled(selected.isEmpty)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.bar)
+        .confirmationDialog(
+            String(format: model.t(.confirmDeleteVideos), selected.count),
+            isPresented: $pendingBulkDelete,
+            titleVisibility: .visible
+        ) {
+            Button(model.t(.deleteAction), role: .destructive) {
+                bulkDelete()
+            }
+            Button(model.t(.cancelAction), role: .cancel) {}
+        }
+    }
+
+    private func handleTap(_ item: VideoItem) {
+        if isSelecting {
+            if selected.contains(item.url) { selected.remove(item.url) }
+            else { selected.insert(item.url) }
+        } else {
+            NSWorkspace.shared.open(item.url)
+        }
+    }
+
+    private func bulkDelete() {
+        let urls = selected
+        for u in urls {
+            try? model.deleteVideo(u)
+            thumbnails[u] = nil
+            aspects[u] = nil
+        }
+        selected.removeAll()
+        isSelecting = false
+        reload()
     }
 
     private var folderBar: some View {
@@ -203,13 +357,15 @@ private struct VideoCard: View {
     let item: VideoItem
     let thumbnail: NSImage?
     let aspect: CGFloat
+    var selectable: Bool = false
+    var isSelected: Bool = false
     let onPreview: () -> Void
     let onReveal: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ZStack {
+            ZStack(alignment: .topLeading) {
                 RoundedRectangle(cornerRadius: 8)
                     .fill(Color.secondary.opacity(0.15))
                 if let thumbnail {
@@ -221,17 +377,37 @@ private struct VideoCard: View {
                     Image(systemName: "film")
                         .font(.system(size: 26))
                         .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                Button(action: onPreview) {
-                    Image(systemName: "play.circle.fill")
-                        .font(.system(size: 32))
-                        .foregroundStyle(.white.opacity(0.92))
-                        .shadow(radius: 3)
+                if !selectable {
+                    Button(action: onPreview) {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 32))
+                            .foregroundStyle(.white.opacity(0.92))
+                            .shadow(radius: 3)
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .buttonStyle(.plain)
+                if selectable {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 22))
+                        .foregroundStyle(isSelected ? Color.accentColor : Color.white.opacity(0.85))
+                        .background(
+                            Circle().fill(.black.opacity(0.35))
+                                .blur(radius: 2)
+                        )
+                        .padding(8)
+                }
             }
             .aspectRatio(aspect, contentMode: .fit)
             .frame(maxWidth: .infinity)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
+            )
+            .contentShape(Rectangle())
+            .onTapGesture { onPreview() }
 
             Text(item.name)
                 .font(.caption.weight(.medium))
@@ -246,17 +422,19 @@ private struct VideoCard: View {
             .font(.caption2)
             .foregroundStyle(.secondary)
 
-            HStack(spacing: 6) {
-                iconButton(icon: "play.fill",  help: model.t(.watchAction), action: onPreview)
-                iconButton(icon: "folder",     help: model.t(.showInFinder), action: onReveal)
-                Spacer()
-                iconButton(icon: "trash",      help: model.t(.deleteAction), tint: .red, action: onDelete)
+            if !selectable {
+                HStack(spacing: 6) {
+                    iconButton(icon: "play.fill",  help: model.t(.watchAction), action: onPreview)
+                    iconButton(icon: "folder",     help: model.t(.showInFinder), action: onReveal)
+                    Spacer()
+                    iconButton(icon: "trash",      help: model.t(.deleteAction), tint: .red, action: onDelete)
+                }
             }
         }
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 10)
-                .fill(Color.secondary.opacity(0.06))
+                .fill(isSelected ? Color.accentColor.opacity(0.10) : Color.secondary.opacity(0.06))
         )
         .contextMenu {
             Button(model.t(.watchAction)) { onPreview() }

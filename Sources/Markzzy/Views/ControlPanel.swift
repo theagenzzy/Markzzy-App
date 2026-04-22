@@ -3,6 +3,7 @@ import AVFoundation
 
 struct ControlPanel: View {
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var license: LicenseManager
     @State private var showResolutionMenu = false
 
     enum PreviewMode: String, CaseIterable, Identifiable {
@@ -125,22 +126,32 @@ struct ControlPanel: View {
                                 }
                             }
                             sourceRow(icon: "video", label: model.t(.camera)) {
-                                Picker("", selection: $model.selectedCamera) {
-                                    Text(model.t(.noneOption)).tag(Optional<AVCaptureDevice>(nil))
-                                    ForEach(model.cameras, id: \.uniqueID) {
-                                        Text(camLabel($0)).tag(Optional($0))
+                                HStack(spacing: 4) {
+                                    Picker("", selection: $model.selectedCamera) {
+                                        Text(model.t(.noneOption)).tag(Optional<AVCaptureDevice>(nil))
+                                        ForEach(model.cameras, id: \.uniqueID) {
+                                            Text(camLabel($0)).tag(Optional($0))
+                                        }
                                     }
+                                    .labelsHidden()
+                                    .disabled(isRecording)
+                                    .help(isRecording ? model.t(.lockedDuringRecording) : "")
+                                    deviceOptionsMenu(for: model.selectedCamera)
                                 }
-                                .labelsHidden()
                             }
                             sourceRow(icon: "mic", label: model.t(.mic)) {
-                                Picker("", selection: $model.selectedMic) {
-                                    Text(model.t(.off)).tag(Optional<AVCaptureDevice>(nil))
-                                    ForEach(model.microphones, id: \.uniqueID) {
-                                        Text($0.localizedName).tag(Optional($0))
+                                HStack(spacing: 4) {
+                                    Picker("", selection: $model.selectedMic) {
+                                        Text(model.t(.off)).tag(Optional<AVCaptureDevice>(nil))
+                                        ForEach(model.microphones, id: \.uniqueID) {
+                                            Text($0.localizedName).tag(Optional($0))
+                                        }
                                     }
+                                    .labelsHidden()
+                                    .disabled(isRecording)
+                                    .help(isRecording ? model.t(.lockedDuringRecording) : "")
+                                    deviceOptionsMenu(for: model.selectedMic)
                                 }
-                                .labelsHidden()
                             }
                             if model.selectedMic != nil {
                                 micLevelMeter
@@ -497,13 +508,20 @@ struct ControlPanel: View {
             Spacer()
             if isRecording {
                 HStack(spacing: 5) {
-                    Circle().fill(.red).frame(width: 6, height: 6)
+                    Circle()
+                        .fill(model.state == .paused ? Color.yellow : Color.red)
+                        .frame(width: 6, height: 6)
                     Text(timeString(model.elapsed))
                         .monospacedDigit()
+                    if model.state == .paused {
+                        Text(model.t(.paused))
+                            .font(.caption2.weight(.bold))
+                    }
                 }
-                .foregroundStyle(.red)
+                .foregroundStyle(model.state == .paused ? Color.yellow : Color.red)
                 .font(.subheadline.weight(.semibold))
             }
+            AccountMenu()
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -702,24 +720,7 @@ struct ControlPanel: View {
 
     private var footer: some View {
         VStack(spacing: 6) {
-            Button {
-                Task { await model.toggleRecording() }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: isRecording ? "stop.fill" : "record.circle")
-                    Text(isRecording ? model.t(.stopRecording) : model.t(.startRecording))
-                        .font(.body.weight(.semibold))
-                    Spacer()
-                    Text("⇧⌘R").font(.caption).foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .contentShape(Rectangle())
-            }
-            .controlSize(.large)
-            .buttonStyle(.borderedProminent)
-            .tint(isRecording ? .red : .accentColor)
-            .keyboardShortcut("r", modifiers: [.command, .shift])
-
+            transportButtons
             statusLine
         }
         .padding(.horizontal, 16)
@@ -737,6 +738,9 @@ struct ControlPanel: View {
             case .recording:
                 Text(model.t(.recording))
                     .foregroundStyle(.red)
+            case .paused:
+                Text(model.t(.paused))
+                    .foregroundStyle(.yellow)
             case .finishing:
                 Text(model.t(.saving))
             case .done(let url):
@@ -747,7 +751,16 @@ struct ControlPanel: View {
                         .buttonStyle(.link)
                 }
             case .failed(let m):
-                Text("\(model.t(.errorPrefix)) \(m)").foregroundStyle(.red)
+                HStack(spacing: 6) {
+                    Text("\(model.t(.errorPrefix)) \(AppModel.cleanFailureMessage(m))")
+                        .foregroundStyle(.red)
+                    if let url = AppModel.settingsURL(for: m) {
+                        Button(model.t(.openSystemSettings)) {
+                            NSWorkspace.shared.open(url)
+                        }
+                        .buttonStyle(.link)
+                    }
+                }
             }
         }
         .font(.caption)
@@ -755,15 +768,125 @@ struct ControlPanel: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    // MARK: - Transport (record / pause / resume / stop)
+
+    @ViewBuilder
+    private var transportButtons: some View {
+        switch model.state {
+        case .recording:
+            HStack(spacing: 8) {
+                pauseButton
+                stopButton
+            }
+        case .paused:
+            HStack(spacing: 8) {
+                resumeButton
+                stopButton
+            }
+        default:
+            startButton
+        }
+    }
+
+    private var startButton: some View {
+        Button {
+            Task { await model.toggleRecording() }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "record.circle")
+                Text(model.t(.startRecording)).font(.body.weight(.semibold))
+                Spacer()
+                Text("⇧⌘R").font(.caption).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .controlSize(.large)
+        .buttonStyle(.borderedProminent)
+        .tint(.accentColor)
+        .keyboardShortcut("r", modifiers: [.command, .shift])
+    }
+
+    private var pauseButton: some View {
+        Button { model.pauseRecording() } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "pause.fill")
+                Text(model.t(.pauseAction)).font(.body.weight(.semibold))
+            }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .controlSize(.large)
+        .buttonStyle(.bordered)
+        .keyboardShortcut("p", modifiers: [.command, .shift])
+    }
+
+    private var resumeButton: some View {
+        Button { model.resumeRecording() } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "play.fill")
+                Text(model.t(.resumeAction)).font(.body.weight(.semibold))
+            }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .controlSize(.large)
+        .buttonStyle(.borderedProminent)
+        .tint(.accentColor)
+        .keyboardShortcut("p", modifiers: [.command, .shift])
+    }
+
+    private var stopButton: some View {
+        Button {
+            Task { await model.toggleRecording() }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "stop.fill")
+                Text(model.t(.stopAction)).font(.body.weight(.semibold))
+            }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .controlSize(.large)
+        .buttonStyle(.borderedProminent)
+        .tint(.red)
+        .keyboardShortcut("r", modifiers: [.command, .shift])
+    }
+
     // MARK: - Helpers
 
     private var isRecording: Bool {
-        if case .recording = model.state { return true } else { return false }
+        switch model.state {
+        case .recording, .paused: return true
+        default: return false
+        }
     }
 
     private func timeString(_ t: TimeInterval) -> String {
         let total = Int(t)
         return String(format: "%02d:%02d", total / 60, total % 60)
+    }
+
+    @ViewBuilder
+    private func deviceOptionsMenu(for device: AVCaptureDevice?) -> some View {
+        Menu {
+            if let d = device {
+                Button {
+                    model.hideDevice(uniqueID: d.uniqueID)
+                } label: {
+                    Text(String(format: model.t(.hideDeviceFormat), d.localizedName))
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 18, height: 18)
+                .foregroundStyle(.secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(device == nil || isRecording)
     }
 
     private func camLabel(_ d: AVCaptureDevice) -> String {
