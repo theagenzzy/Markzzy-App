@@ -75,6 +75,20 @@ public enum LKey: String, CaseIterable {
     case licenseWelcomeBack, licenseWelcomeBackSubtitle
     case licenseSendSignInLink, licenseUseDifferentEmail
     case licenseSignOutConfirmTitle, licenseSignOutConfirmBody, licenseSignOutConfirm
+    // Email validation + typo suggestion
+    case licenseDidYouMean              // "Did you mean %@?"
+    case licenseUseThis                 // "Use this"
+    case licenseNoEmailArrivedHint      // "Nothing in 2 minutes? Make sure the email is right or get a sub."
+    // Settings subsection tabs
+    case sectionGeneral, sectionRecording, sectionCameras, sectionOutput, sectionLicense
+    // License hero / details
+    case licenseActiveSubtitle, licenseTrialDaysLeft, licenseThisMac, licenseGetHelp
+    case copyAction
+    // General/Output enrichment
+    case appAbout, appVersion, appWhatsNew, appWebsite
+    case outputDiskSpace, outputRecordingsCount, outputOpenInFinder
+    // Recording quality descriptions
+    case qualityLowDesc, qualityMediumDesc, qualityHighDesc
 
     // Updates
     case checkForUpdates
@@ -93,6 +107,89 @@ public enum LKey: String, CaseIterable {
     case devicesSection, showAllDevices, showAllDevicesHint
     case hideDeviceFormat, hiddenDevicesHeader, noHiddenDevices, unhideAction
     case lockedDuringRecording
+    case allowVirtualCameras, allowVirtualCamerasHint
+    case detectedCamerasHeader, detectedCamerasHint
+    case detectedColumnName, detectedColumnType, detectedColumnRole, detectedColumnStatus
+    case roleRealIPhone, roleNativeContinuity, roleBridgedIPhone, roleVirtualBridge, roleStandard
+    case statusInUse, statusAvailable, statusFiltered
+
+    // Continuity Camera (iPhone slot in camera picker)
+    case cameraIPhoneSlot, cameraIPhoneWaiting
+
+    // iPhone-waiting overlay shown over the preview while we wait for
+    // the iPhone to become available.
+    case iPhoneWaitingTitle, iPhoneWaitingHint, iPhoneWaitingBridgeNote
+    // Variant shown after the user tapped "Disconnect" on the iPhone
+    // (or the iPhone otherwise dropped mid-session).
+    case iPhoneReconnectingTitle, iPhoneReconnectingHint
+    case iPhoneReconnectButton
+    // Progress + escalation
+    case iPhoneReconnectingAttempt          // "Trying %@…"
+    case iPhoneReconnectExhaustedTitle      // "iOS still blocking — waiting for cool-down"
+    case iPhoneReconnectExhaustedHint       // typical 1-10 min wait + faster options
+    case iPhoneReconnectTryAgain            // "Try again"
+    case iPhoneReconnectStillWatching       // "Markzzy will keep checking…"
+
+    // Educational tip in Settings → Cameras
+    case continuityTipHeader, continuityTipBody
+
+    // License hero (consolidated status card)
+    case licenseHeroTrialEndsToday          // "Trial ends today"
+    case licenseHeroOneDayLeft              // "1 day left"
+    case licenseHeroDaysLeftFormat          // "%d days left"
+    case licenseHeroLifetimeAccess          // "Lifetime access"
+    case licenseHeroSubActive               // "Subscription active"
+    case licenseHeroChargeOnFormat          // "We'll charge $10 on %@ · cancel any time before then ·"
+    case licenseHeroCancelBeforeEnds        // "Cancel before your trial ends and you won't be charged ·"
+    case licenseHeroLifetimeBlurb           // "Pay once, use forever. Includes all future updates."
+    case licenseHeroNextRenewalFormat       // "Next renewal on %@."
+    case licenseHeroUpgradeButton           // "Upgrade · $10/mo"
+    case licenseHeroLifetimeUpsell          // "Lifetime $129 →"
+
+    // License: state-driven cards (past due / cancel-at-period-end)
+    case licensePastDueTitle                // "⚠️ Payment failed"
+    case licensePastDueBody                 // "PayPal is retrying your card…"
+    case licenseUpdatePaymentButton         // "Update payment"
+    case licenseSubEndsOnFormat             // "Subscription ends %@"
+    case licenseReactivateBody              // "Changed your mind? Reactivate any time…"
+    case licenseReactivateButton            // "Reactivate"
+    case licenseCancelSubscription          // "Cancel subscription"
+
+    // License: What's included card
+    case licenseWhatsIncluded
+    case licenseFeaturePresets
+    case licenseFeatureLayouts
+    case licenseFeatureWatermark
+    case licenseFeatureLibrary
+    case licenseFeatureSupportPaid          // "Priority email support"
+    case licenseFeatureSupportTrial         // "Priority email support (Monthly & Lifetime)"
+
+    // License: Compare plans card
+    case licenseComparePlans
+    case licenseComparePrice
+    case licenseCompareBilling
+    case licenseCompareUpdates
+    case licenseCompareSupport
+    case licenseCompareBestFor
+    case licenseCompareFree
+    case licenseCompareMonthlyPrice         // "$10/mo"
+    case licenseCompareLifetimePrice        // "$129"
+    case licenseCompareRecurring
+    case licenseCompareOneTime
+    case licenseComparePriority
+    case licenseCompareTesting
+    case licenseCompareActiveUse
+    case licenseCompareLongTerm
+
+    // Output: Recent recordings + Storage cards
+    case outputRecentRecordings
+    case outputNoRecordingsYet              // empty state
+    case outputStorage
+    case outputUsedByMarkzzy
+    case outputStorageEstimateFormat        // "At %@ quality, you can record approximately **%@**…"
+    case outputStorageLessThanHour
+    case outputStorageHoursFormat           // "%d hours"
+    case outputStorageDaysFormat            // "%d days"
 }
 
 public enum L10n {
@@ -162,8 +259,31 @@ public enum L10n {
             .licenseWrongEmail: "Wrong email? Start over",
             .licenseHaveCode: "I already have a code",
             .licenseEnterEmailFirst: "Enter your email first.",
-            .licenseLinkSent: "We sent an activation link to %@.",
-            .licenseLinkOpenFromMac: "Open the email on this Mac and click \"Open Markzzy\". The app will activate automatically.",
+            .licenseLinkSent: "If %@ has an active subscription, an activation link is on its way.",
+            .licenseLinkOpenFromMac: "Open the email on this Mac and click \"Open Markzzy\" — the app will activate automatically.",
+            .licenseDidYouMean: "Did you mean %@?",
+            .licenseUseThis: "Use this",
+            .licenseNoEmailArrivedHint: "Nothing in a couple of minutes? Double-check the email is right, or get a subscription at markzzy.tech.",
+            .sectionGeneral: "General",
+            .sectionRecording: "Recording",
+            .sectionCameras: "Cameras",
+            .sectionOutput: "Output",
+            .sectionLicense: "License",
+            .licenseActiveSubtitle: "Your subscription is active",
+            .licenseTrialDaysLeft: "%d day(s) left in your trial",
+            .licenseThisMac: "This Mac",
+            .licenseGetHelp: "Get help",
+            .copyAction: "Copy",
+            .appAbout: "About Markzzy",
+            .appVersion: "Version",
+            .appWhatsNew: "What's new",
+            .appWebsite: "Website",
+            .outputDiskSpace: "Free disk space",
+            .outputRecordingsCount: "Recordings",
+            .outputOpenInFinder: "Open in Finder",
+            .qualityLowDesc: "Smaller files. Good for tutorials and screen-only.",
+            .qualityMediumDesc: "Balanced quality and file size. Recommended for most.",
+            .qualityHighDesc: "Maximum quality. Larger files. Best for camera-heavy content.",
             .licenseNoSubscriptionPrefix: "Don't have a subscription yet?",
             .licenseGetItHere: "Get one at markzzy.tech",
             .licenseSection: "License",
@@ -205,6 +325,90 @@ public enum L10n {
             .noHiddenDevices: "No hidden devices.",
             .unhideAction: "Unhide",
             .lockedDuringRecording: "Stop recording to change",
+            .allowVirtualCameras: "Allow virtual cameras as iPhone",
+            .allowVirtualCamerasHint: "Lets the iPhone slot bind to bridge drivers (Camo Camera, EpocCam HD, …) when no real iPhone is detected. Off by default — most users want their real iPhone, not the bridge's virtual camera.",
+            .detectedCamerasHeader: "Detected cameras",
+            .detectedCamerasHint: "What Markzzy currently sees on your Mac. Useful for diagnosing connection issues.",
+            .detectedColumnName: "Name",
+            .detectedColumnType: "Type",
+            .detectedColumnRole: "Role",
+            .detectedColumnStatus: "Status",
+            .roleNativeContinuity: "Native Continuity",
+            .roleRealIPhone: "Real iPhone",
+            .roleBridgedIPhone: "iPhone via bridge",
+            .roleVirtualBridge: "Virtual bridge",
+            .roleStandard: "Standard camera",
+            .statusInUse: "In use",
+            .statusAvailable: "Available",
+            .statusFiltered: "Filtered out",
+            .cameraIPhoneSlot: "iPhone Camera",
+            .cameraIPhoneWaiting: "iPhone (waiting…)",
+            .iPhoneWaitingTitle: "Looking for your iPhone…",
+            .iPhoneWaitingHint: "Wake your iPhone, bring it closer, and make sure Continuity Camera is on in iOS Settings.",
+            .iPhoneWaitingBridgeNote: "Detected: %@. If your iPhone is connected through it, it'll appear once it sends frames. To use Apple's native Continuity, quit the app above.",
+            .iPhoneReconnectingTitle: "iPhone disconnected",
+            .iPhoneReconnectingHint: "Apple imposes a cool-down of up to ~10 minutes after you tap Disconnect. Markzzy will reconnect automatically when iOS allows.\n\nTo speed it up:\n  • Connect your iPhone via USB cable (instant)\n  • Restart your iPhone (always works)",
+            .iPhoneReconnectButton: "Try to reconnect now",
+            .iPhoneReconnectingAttempt: "Trying %@…",
+            .iPhoneReconnectExhaustedTitle: "Waiting for iOS cool-down",
+            .iPhoneReconnectExhaustedHint: "Typical wait: 1–10 minutes. Markzzy will keep checking automatically.\n\nWhile you wait:\n  ✅ Connect USB for instant reconnection\n  ✅ Restart the iPhone (always works)",
+            .iPhoneReconnectTryAgain: "Try again",
+            .iPhoneReconnectStillWatching: "Markzzy is still checking — it'll reconnect the moment iOS allows.",
+            .continuityTipHeader: "About Continuity Camera",
+            .continuityTipBody: "To switch cameras, use the dropdown above.\n\nAvoid tapping \"Disconnect\" on your iPhone — iOS imposes a cool-down of up to ~10 minutes that no app can bypass (it's an Apple privacy protection).\n\nFor uninterrupted professional use, connect your iPhone via USB cable. USB bypasses the cool-down entirely.",
+
+            .licenseHeroTrialEndsToday: "Trial ends today",
+            .licenseHeroOneDayLeft: "1 day left",
+            .licenseHeroDaysLeftFormat: "%d days left",
+            .licenseHeroLifetimeAccess: "Lifetime access",
+            .licenseHeroSubActive: "Subscription active",
+            .licenseHeroChargeOnFormat: "We'll charge $10 on %@ · cancel any time before then ·",
+            .licenseHeroCancelBeforeEnds: "Cancel before your trial ends and you won't be charged ·",
+            .licenseHeroLifetimeBlurb: "Pay once, use forever. Includes all future updates.",
+            .licenseHeroNextRenewalFormat: "Next renewal on %@.",
+            .licenseHeroUpgradeButton: "Upgrade · $10/mo",
+            .licenseHeroLifetimeUpsell: "Lifetime $129 →",
+
+            .licensePastDueTitle: "⚠️ Payment failed",
+            .licensePastDueBody: "PayPal is retrying your card. Update your payment method to avoid losing access.",
+            .licenseUpdatePaymentButton: "Update payment",
+            .licenseSubEndsOnFormat: "Subscription ends %@",
+            .licenseReactivateBody: "Changed your mind? Reactivate any time before that date and nothing changes.",
+            .licenseReactivateButton: "Reactivate",
+            .licenseCancelSubscription: "Cancel subscription",
+
+            .licenseWhatsIncluded: "What's included",
+            .licenseFeaturePresets: "All platform presets — TikTok, Reels, Shorts, Stories, YouTube",
+            .licenseFeatureLayouts: "5 PIP layouts · Smart crop · Up to 4K capture",
+            .licenseFeatureWatermark: "Watermark-free · Unlimited recordings",
+            .licenseFeatureLibrary: "Library access · All future updates",
+            .licenseFeatureSupportPaid: "Priority email support",
+            .licenseFeatureSupportTrial: "Priority email support (Monthly & Lifetime)",
+
+            .licenseComparePlans: "Compare plans",
+            .licenseComparePrice: "Price",
+            .licenseCompareBilling: "Billing",
+            .licenseCompareUpdates: "Updates",
+            .licenseCompareSupport: "Support",
+            .licenseCompareBestFor: "Best for",
+            .licenseCompareFree: "Free",
+            .licenseCompareMonthlyPrice: "$10/mo",
+            .licenseCompareLifetimePrice: "$129",
+            .licenseCompareRecurring: "Recurring",
+            .licenseCompareOneTime: "One-time",
+            .licenseComparePriority: "Priority",
+            .licenseCompareTesting: "Testing",
+            .licenseCompareActiveUse: "Active use",
+            .licenseCompareLongTerm: "Long-term",
+
+            .outputRecentRecordings: "Recent recordings",
+            .outputNoRecordingsYet: "No recordings yet — your captures will appear here.",
+            .outputStorage: "Storage",
+            .outputUsedByMarkzzy: "Used by Markzzy",
+            .outputStorageEstimateFormat: "At %@ quality, you can record approximately **%@** before running out of disk.",
+            .outputStorageLessThanHour: "less than an hour",
+            .outputStorageHoursFormat: "%d hours",
+            .outputStorageDaysFormat: "%d days",
         ],
         .es: [
             .tabRecord: "Grabar", .tabLibrary: "Biblioteca", .tabSettings: "Ajustes",
@@ -272,7 +476,30 @@ public enum L10n {
             .licenseWrongEmail: "¿Email incorrecto? Empezar de nuevo",
             .licenseHaveCode: "Ya tengo un código",
             .licenseEnterEmailFirst: "Primero ingresá tu email.",
-            .licenseLinkSent: "Te enviamos un link de activación a %@.",
+            .licenseLinkSent: "Si %@ tiene una suscripción activa, te enviamos un link de activación.",
+            .licenseDidYouMean: "¿Quisiste decir %@?",
+            .licenseUseThis: "Usar este",
+            .licenseNoEmailArrivedHint: "¿Nada en un par de minutos? Verificá que el email esté bien, o conseguí una suscripción en markzzy.tech.",
+            .sectionGeneral: "General",
+            .sectionRecording: "Grabación",
+            .sectionCameras: "Cámaras",
+            .sectionOutput: "Salida",
+            .sectionLicense: "Licencia",
+            .licenseActiveSubtitle: "Tu suscripción está activa",
+            .licenseTrialDaysLeft: "%d día(s) restante(s) en tu trial",
+            .licenseThisMac: "Esta Mac",
+            .licenseGetHelp: "Obtener ayuda",
+            .copyAction: "Copiar",
+            .appAbout: "Sobre Markzzy",
+            .appVersion: "Versión",
+            .appWhatsNew: "Novedades",
+            .appWebsite: "Sitio web",
+            .outputDiskSpace: "Espacio libre en disco",
+            .outputRecordingsCount: "Grabaciones",
+            .outputOpenInFinder: "Abrir en Finder",
+            .qualityLowDesc: "Archivos más chicos. Bien para tutoriales y solo pantalla.",
+            .qualityMediumDesc: "Equilibrio entre calidad y tamaño. Recomendado para la mayoría.",
+            .qualityHighDesc: "Calidad máxima. Archivos más grandes. Ideal para contenido con mucha cámara.",
             .licenseLinkOpenFromMac: "Abrí el email en esta Mac y hacé click en \"Open Markzzy\". La app se activa sola.",
             .licenseNoSubscriptionPrefix: "¿Todavía sin suscripción?",
             .licenseGetItHere: "Conseguí una en markzzy.tech",
@@ -315,6 +542,90 @@ public enum L10n {
             .noHiddenDevices: "Sin dispositivos ocultos.",
             .unhideAction: "Mostrar",
             .lockedDuringRecording: "Detené la grabación para cambiar",
+            .allowVirtualCameras: "Permitir cámaras virtuales como iPhone",
+            .allowVirtualCamerasHint: "Hace que el slot iPhone bindee a drivers de puentes (Camo Camera, EpocCam HD, …) cuando no se detecta un iPhone real. Off por defecto — la mayoría quiere su iPhone real, no la cámara virtual del puente.",
+            .detectedCamerasHeader: "Cámaras detectadas",
+            .detectedCamerasHint: "Lo que Markzzy ve en tu Mac ahora mismo. Útil para diagnosticar problemas de conexión.",
+            .detectedColumnName: "Nombre",
+            .detectedColumnType: "Tipo",
+            .detectedColumnRole: "Rol",
+            .detectedColumnStatus: "Estado",
+            .roleNativeContinuity: "Continuity nativo",
+            .roleRealIPhone: "iPhone real",
+            .roleBridgedIPhone: "iPhone vía puente",
+            .roleVirtualBridge: "Puente virtual",
+            .roleStandard: "Cámara estándar",
+            .statusInUse: "En uso",
+            .statusAvailable: "Disponible",
+            .statusFiltered: "Filtrada",
+            .cameraIPhoneSlot: "iPhone Camera",
+            .cameraIPhoneWaiting: "iPhone (esperando…)",
+            .iPhoneWaitingTitle: "Buscando tu iPhone…",
+            .iPhoneWaitingHint: "Despertá tu iPhone, acercalo, y verificá que Continuity Camera esté activa en Ajustes de iOS.",
+            .iPhoneWaitingBridgeNote: "Detectado: %@. Si tu iPhone está conectado a través suyo, va a aparecer apenas envíe frames. Para usar Continuity nativa de Apple, cerrá la app de arriba.",
+            .iPhoneReconnectingTitle: "iPhone desconectado",
+            .iPhoneReconnectingHint: "Apple impone un bloqueo de hasta ~10 minutos después de tocar Disconnect. Markzzy reconectará automáticamente cuando iOS lo permita.\n\nPara acelerar:\n  • Conectá tu iPhone con cable USB (instantáneo)\n  • Reiniciá el iPhone (siempre funciona)",
+            .iPhoneReconnectButton: "Intentar reconectar ahora",
+            .iPhoneReconnectingAttempt: "Probando %@…",
+            .iPhoneReconnectExhaustedTitle: "Esperando que iOS libere",
+            .iPhoneReconnectExhaustedHint: "Tiempo típico: 1–10 minutos. Markzzy seguirá revisando automáticamente.\n\nMientras esperás:\n  ✅ Conectá USB para reconexión instantánea\n  ✅ Reiniciá el iPhone (siempre funciona)",
+            .iPhoneReconnectTryAgain: "Intentar de nuevo",
+            .iPhoneReconnectStillWatching: "Markzzy sigue revisando — va a reconectar apenas iOS lo permita.",
+            .continuityTipHeader: "Sobre Continuity Camera",
+            .continuityTipBody: "Para cambiar de cámara, usá el dropdown de arriba.\n\nEvitá tocar \"Disconnect\" en tu iPhone — iOS impone un cool-down de hasta ~10 minutos que ninguna app puede saltear (es protección de privacidad de Apple).\n\nPara uso profesional sin interrupciones, conectá tu iPhone con cable USB. USB bypassea el cool-down completamente.",
+
+            .licenseHeroTrialEndsToday: "El trial termina hoy",
+            .licenseHeroOneDayLeft: "1 día restante",
+            .licenseHeroDaysLeftFormat: "%d días restantes",
+            .licenseHeroLifetimeAccess: "Acceso de por vida",
+            .licenseHeroSubActive: "Suscripción activa",
+            .licenseHeroChargeOnFormat: "Te cobramos $10 el %@ · cancelá antes y no se te cobra ·",
+            .licenseHeroCancelBeforeEnds: "Cancelá antes de que termine el trial y no se te cobra ·",
+            .licenseHeroLifetimeBlurb: "Pagá una vez, usalo para siempre. Incluye todas las actualizaciones futuras.",
+            .licenseHeroNextRenewalFormat: "Próxima renovación el %@.",
+            .licenseHeroUpgradeButton: "Actualizar · $10/mes",
+            .licenseHeroLifetimeUpsell: "Vitalicio $129 →",
+
+            .licensePastDueTitle: "⚠️ Pago fallido",
+            .licensePastDueBody: "PayPal está reintentando tu tarjeta. Actualizá el método de pago para no perder el acceso.",
+            .licenseUpdatePaymentButton: "Actualizar pago",
+            .licenseSubEndsOnFormat: "La suscripción termina el %@",
+            .licenseReactivateBody: "¿Cambiaste de opinión? Reactivala antes de esa fecha y nada cambia.",
+            .licenseReactivateButton: "Reactivar",
+            .licenseCancelSubscription: "Cancelar suscripción",
+
+            .licenseWhatsIncluded: "Qué incluye",
+            .licenseFeaturePresets: "Todos los presets — TikTok, Reels, Shorts, Stories, YouTube",
+            .licenseFeatureLayouts: "5 layouts PIP · Recorte inteligente · Captura hasta 4K",
+            .licenseFeatureWatermark: "Sin marca de agua · Grabaciones ilimitadas",
+            .licenseFeatureLibrary: "Acceso a la Biblioteca · Todas las actualizaciones futuras",
+            .licenseFeatureSupportPaid: "Soporte por email prioritario",
+            .licenseFeatureSupportTrial: "Soporte por email prioritario (Mensual y Vitalicio)",
+
+            .licenseComparePlans: "Comparar planes",
+            .licenseComparePrice: "Precio",
+            .licenseCompareBilling: "Facturación",
+            .licenseCompareUpdates: "Actualizaciones",
+            .licenseCompareSupport: "Soporte",
+            .licenseCompareBestFor: "Ideal para",
+            .licenseCompareFree: "Gratis",
+            .licenseCompareMonthlyPrice: "$10/mes",
+            .licenseCompareLifetimePrice: "$129",
+            .licenseCompareRecurring: "Recurrente",
+            .licenseCompareOneTime: "Pago único",
+            .licenseComparePriority: "Prioritario",
+            .licenseCompareTesting: "Probar",
+            .licenseCompareActiveUse: "Uso activo",
+            .licenseCompareLongTerm: "Largo plazo",
+
+            .outputRecentRecordings: "Grabaciones recientes",
+            .outputNoRecordingsYet: "Aún no hay grabaciones — tus capturas aparecerán acá.",
+            .outputStorage: "Almacenamiento",
+            .outputUsedByMarkzzy: "Usado por Markzzy",
+            .outputStorageEstimateFormat: "A calidad %@, podés grabar aproximadamente **%@** antes de quedarte sin espacio.",
+            .outputStorageLessThanHour: "menos de una hora",
+            .outputStorageHoursFormat: "%d horas",
+            .outputStorageDaysFormat: "%d días",
         ],
     ]
 

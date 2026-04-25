@@ -66,6 +66,22 @@ struct PIPComposedPreview: View {
                 // Camera slot (always in the view tree — keeps the NSView alive).
                 cameraView(frame: c)
                     .opacity((!model.composedFrameActive && model.layout.usesCamera) ? 1 : 0)
+
+                // Full-canvas disconnect banner. Drawn last so it sits
+                // above the small PIP slot AND above the screen
+                // preview. Only appears when:
+                //   - the disconnect flag is set (persisted across launches),
+                //   - the user is still on the iPhone slot
+                //     (not "I switched to FaceTime HD"),
+                //   - the layout actually uses a camera.
+                if model.iPhoneRecentlyDisconnected,
+                   model.wantsContinuityCamera,
+                   model.layout.usesCamera {
+                    IPhoneDisconnectedBanner()
+                        .environmentObject(model)
+                        .frame(width: canvas.width, height: canvas.height)
+                        .offset(x: origin.x, y: origin.y)
+                }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
             .coordinateSpace(name: "canvas")
@@ -145,6 +161,11 @@ struct PIPComposedPreview: View {
                     )
                     .frame(width: c.width, height: c.height)
                 }
+            } else if model.isWaitingForIPhone {
+                Color.black.overlay(
+                    IPhoneWaitingOverlay()
+                        .environmentObject(model)
+                )
             } else {
                 Color.black.overlay(
                     Image(systemName: "video.slash")
@@ -277,6 +298,220 @@ struct PIPComposedPreview: View {
         return aspect > ca
             ? CGSize(width: container.width, height: container.width / aspect)
             : CGSize(width: container.height * aspect, height: container.height)
+    }
+}
+
+/// "Looking for your iPhone…" overlay shown over the empty camera slot
+/// while we wait for a real iPhone (Continuity or bridge-exposed) to
+/// surface. The wake session is keeping AVFoundation's scan warm in the
+/// background — this overlay is purely UX so the user knows we're not
+/// frozen and what to do (wake the phone, bring it closer).
+///
+/// Adapts to the camera slot size: full text + hint when the slot is
+/// large (PIP camera-only or split layouts), compact icon + short label
+/// when it's tiny (PIP overlay corner thumbnail). If a third-party camera
+/// bridge is installed AND there's room, an extra diagnostic line
+/// explains why the iPhone might be slow to appear.
+private struct IPhoneWaitingOverlay: View {
+    @EnvironmentObject var model: AppModel
+
+    /// Cached at first render — re-evaluated when the model triggers a
+    /// device list change. Pure data lookup, cheap.
+    private var detectedBridges: [CameraBridge] {
+        CameraBridgeDetector.detect()
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let minSide = min(geo.size.width, geo.size.height)
+            let style = OverlayStyle.forSize(minSide)
+            content(style: style)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+        }
+    }
+
+    /// Title + hint vary based on whether this is the user's first
+    /// attempt to find an iPhone, or a reconnect after disconnect.
+    private var titleKey: LKey {
+        model.iPhoneRecentlyDisconnected ? .iPhoneReconnectingTitle : .iPhoneWaitingTitle
+    }
+    private var hintKey: LKey {
+        model.iPhoneRecentlyDisconnected ? .iPhoneReconnectingHint : .iPhoneWaitingHint
+    }
+
+    @ViewBuilder
+    private func content(style: OverlayStyle) -> some View {
+        switch style {
+        case .minimal:
+            Image(systemName: "iphone.gen3")
+                .font(.system(size: 18))
+                .foregroundStyle(.white.opacity(0.7))
+                .symbolEffect(.pulse, options: .repeating)
+        case .compact:
+            VStack(spacing: 4) {
+                Image(systemName: "iphone.gen3")
+                    .font(.system(size: 20))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .symbolEffect(.pulse, options: .repeating)
+                Text(model.t(titleKey))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            .padding(6)
+        case .full:
+            VStack(spacing: 8) {
+                Image(systemName: "iphone.gen3")
+                    .font(.system(size: 28))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .symbolEffect(.pulse, options: .repeating)
+                Text(model.t(titleKey))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.95))
+                Text(model.t(hintKey))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.65))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(4)
+                    .padding(.horizontal, 12)
+                // Reconnect button lives in the full-canvas
+                // `IPhoneDisconnectedBanner` overlay (rendered by the
+                // parent `PIPComposedPreview`). Don't duplicate it here.
+                if !model.iPhoneRecentlyDisconnected, !detectedBridges.isEmpty {
+                    Divider()
+                        .frame(width: 60)
+                        .opacity(0.3)
+                        .padding(.vertical, 2)
+                    Text(String(format: model.t(.iPhoneWaitingBridgeNote),
+                                detectedBridges.map(\.displayName).joined(separator: ", ")))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(4)
+                        .padding(.horizontal, 12)
+                }
+            }
+            .padding(.vertical, 12)
+            .padding(.horizontal, 8)
+        }
+    }
+
+    private enum OverlayStyle {
+        case minimal, compact, full
+        static func forSize(_ minSide: CGFloat) -> OverlayStyle {
+            if minSide < 70 { return .minimal }
+            if minSide < 180 { return .compact }
+            return .full
+        }
+    }
+}
+
+/// Full-canvas overlay shown when the user tapped Disconnect on the
+/// iPhone. The compact in-PIP overlay can't fit a button when the camera
+/// slot is small (PIP layout in YouTube preset), so we render this on
+/// top of the entire preview area instead — guarantees the Reconnect
+/// button is always reachable regardless of layout.
+///
+/// Has three visual states based on `AppModel`:
+///   1. Idle — initial after disconnect. Shows "Reconnect iPhone" button.
+///   2. In-progress — `reconnectAttemptStatus != nil`. Shows spinner +
+///      "Trying 1/3…" so the user knows we're working.
+///   3. Exhausted — `reconnectExhausted == true`. Shows extended manual
+///      recovery instructions (lock+unlock, iOS Settings, restart) and
+///      a "Try again" button to start a fresh cycle.
+private struct IPhoneDisconnectedBanner: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        ZStack {
+            // Semi-transparent backdrop — frozen-canvas signal but
+            // screen preview underneath stays faintly visible.
+            Color.black.opacity(0.78)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            ScrollView {
+                content
+                    .padding(20)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let status = model.reconnectAttemptStatus {
+            // State 2 — in progress.
+            VStack(spacing: 10) {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(.white)
+                Text(String(format: model.t(.iPhoneReconnectingAttempt), status))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+        } else if model.reconnectExhausted {
+            // State 3 — exhausted, escalate to manual instructions.
+            VStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 26))
+                    .foregroundStyle(.orange)
+                Text(model.t(.iPhoneReconnectExhaustedTitle))
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                Text(model.t(.iPhoneReconnectExhaustedHint))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .multilineTextAlignment(.leading)
+                    .padding(.horizontal, 16)
+                Button {
+                    model.reconnectExhausted = false
+                    Task { await model.forceIPhoneReconnect() }
+                } label: {
+                    Label(model.t(.iPhoneReconnectTryAgain), systemImage: "arrow.clockwise")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+                .tint(.blue)
+                .padding(.top, 4)
+                Text(model.t(.iPhoneReconnectStillWatching))
+                    .font(.system(size: 10, weight: .regular))
+                    .foregroundStyle(.white.opacity(0.55))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 6)
+            }
+        } else {
+            // State 1 — idle, fresh disconnect.
+            VStack(spacing: 10) {
+                Image(systemName: "iphone.gen3")
+                    .font(.system(size: 30))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .symbolEffect(.pulse, options: .repeating)
+                Text(model.t(.iPhoneReconnectingTitle))
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                Text(model.t(.iPhoneReconnectingHint))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(4)
+                    .padding(.horizontal, 24)
+                Button {
+                    Task { await model.forceIPhoneReconnect() }
+                } label: {
+                    Label(model.t(.iPhoneReconnectButton), systemImage: "arrow.clockwise")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+                .tint(.blue)
+                .padding(.top, 4)
+            }
+        }
     }
 }
 

@@ -36,6 +36,12 @@ de salida abre, tiene pistas de video y audio, y la duración correcta.
 Esto genera el icono, crea `Markzzy.app` en `~/Desktop` y copia el
 binario dentro del bundle (si está compilado).
 
+## Documentación
+
+- [`docs/RELEASING.md`](docs/RELEASING.md) — proceso para cortar una nueva versión.
+- [`docs/SECURITY.md`](docs/SECURITY.md) — threat model y mitigaciones.
+- [`Tests/README.md`](Tests/README.md) — estructura de los dos targets de test.
+
 ## Arquitectura
 
 ```

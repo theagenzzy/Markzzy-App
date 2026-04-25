@@ -19,6 +19,7 @@ public final class AppModel: ObservableObject {
         didSet {
             UserDefaults.standard.set(deviceFilter.hideVirtualDevices == false, forKey: Keys.showAllDevices)
             UserDefaults.standard.set(Array(deviceFilter.hiddenDeviceIDs), forKey: Keys.hiddenDeviceIDs)
+            UserDefaults.standard.set(deviceFilter.allowVirtualCameras, forKey: Keys.allowVirtualCameras)
             // Re-enumerate so any newly-revealed/hidden device is reflected.
             cameras = CameraCapture.listDevices(filter: deviceFilter)
             microphones = AudioCapture.listDevices(filter: deviceFilter)
@@ -44,10 +45,20 @@ public final class AppModel: ObservableObject {
         deviceFilter = f
     }
 
-    /// All currently-connected devices (ignoring filter), for the Settings UI
-    /// that lists hidden ones.
-    public var allConnectedCameras: [AVCaptureDevice] { CameraCapture.listAllDevices() }
-    public var allConnectedMicrophones: [AVCaptureDevice] { AudioCapture.listAllDevices() }
+    /// All currently-connected devices (ignoring the user's hide filter),
+    /// for the Settings UI that lists hidden / detected devices.
+    /// Cached as `@Published` so SwiftUI re-renders don't keep re-calling
+    /// AVFoundation discovery on every keystroke / button tap. Refreshed
+    /// from `handleDeviceChange` and `refreshDevices`, just like
+    /// `cameras` / `microphones`.
+    ///
+    /// Default to empty so `AppModel.init()` is cheap — eagerly calling
+    /// `CameraCapture.listAllDevices()` here was the largest cold-start
+    /// stall (AVFoundation device enumeration is ~1-3 s on first launch).
+    /// `bootstrap()` populates these via `refreshDevices()` after the
+    /// first frame is on screen.
+    @Published public var allConnectedCameras: [AVCaptureDevice] = []
+    @Published public var allConnectedMicrophones: [AVCaptureDevice] = []
 
     @Published public var selectedScreen: ScreenSource? {
         didSet {
@@ -56,6 +67,63 @@ public final class AppModel: ObservableObject {
         }
     }
     @Published public var selectedCamera: AVCaptureDevice?
+
+    /// True when the user has asked for the iPhone slot but no actual
+    /// iPhone-like device is bound yet. Drives the "Looking for your
+    /// iPhone…" overlay on the preview area. The wake session keeps
+    /// AVFoundation's Continuity scan warm in the background while
+    /// this is true; the moment KVO surfaces an iPhone we bind it,
+    /// `selectedCamera` becomes iPhone-like, and the overlay disappears.
+    public var isWaitingForIPhone: Bool {
+        guard wantsContinuityCamera else { return false }
+        guard let cam = selectedCamera else { return true }
+        return !DeviceFilter.looksLikeIPhone(cam)
+    }
+
+    /// Set true when the user tapped "Disconnect" on the iPhone (or the
+    /// iPhone otherwise dropped from us mid-session). Drives the
+    /// disconnect banner with the "Reconnect iPhone" button.
+    ///
+    /// **Persistent**: once true, stays true across app restarts until
+    /// the iPhone is successfully reconnected. We don't time it out —
+    /// if the user closed Markzzy after a Disconnect and opens it days
+    /// later, they should still see the Reconnect option until they've
+    /// actually reconnected, not silently lose the indicator that
+    /// something is wrong.
+    @Published public var iPhoneRecentlyDisconnected: Bool = UserDefaults.standard.bool(forKey: Keys.iPhoneDisconnectFlag) {
+        didSet {
+            UserDefaults.standard.set(iPhoneRecentlyDisconnected, forKey: Keys.iPhoneDisconnectFlag)
+        }
+    }
+
+    /// While `forceIPhoneReconnect()` is running its multi-attempt cycle,
+    /// this is set to the human-friendly "attempt X/Y" string. Drives a
+    /// progress label in the disconnect banner so the user sees we're
+    /// actively trying instead of staring at a frozen button.
+    @Published public var reconnectAttemptStatus: String?
+
+    /// Set true after `forceIPhoneReconnect()` finishes all its attempts
+    /// without success. The banner switches from the standard "tap
+    /// Reconnect" message to extended manual-recovery instructions
+    /// (toggle iPhone Settings, power-cycle as last resort).
+    @Published public var reconnectExhausted: Bool = false
+    /// User wants the iPhone (Continuity Camera) slot. Persisted so the slot
+    /// stays "selected" even after macOS drops the device, and we re-bind to
+    /// the real iPhone the moment it reappears.
+    @Published public var wantsContinuityCamera: Bool = AppModel.loadWantsContinuity() {
+        didSet {
+            UserDefaults.standard.set(wantsContinuityCamera, forKey: Keys.wantsContinuityCamera)
+            // Going off→on (the user just picked the iPhone slot): release
+            // whatever camera the preview session was holding so the wake
+            // session can claim the built-in camera as its placeholder
+            // without fighting over FaceTime HD.
+            if wantsContinuityCamera, !oldValue {
+                applyPreviewCamera(nil)
+                stopContinuityWakeSession()
+            }
+            updateContinuityPolling()
+        }
+    }
     @Published public var selectedMic: AVCaptureDevice? {
         didSet {
             guard oldValue?.uniqueID != selectedMic?.uniqueID else { return }
@@ -139,13 +207,34 @@ public final class AppModel: ObservableObject {
     private var pipeline: CapturePipeline?
 
     public let previewSession = AVCaptureSession()
-    private var previewInput: AVCaptureDeviceInput?
+    var previewInput: AVCaptureDeviceInput?
     private let livePreview = LivePreview()
     private let micMonitor = MicMonitor()
     private var timer: Timer?
     private var recordingStart: Date?
-    private var deviceObservers: [NSObjectProtocol] = []
-    private var deviceChangeTask: Task<Void, Never>?
+    var deviceObservers: [NSObjectProtocol] = []
+    var deviceChangeTask: Task<Void, Never>?
+    var continuityPollTask: Task<Void, Never>?
+    /// KVO token on `CameraCapture.sharedDiscovery.devices`. AVFoundation only
+    /// triggers Continuity Camera enumeration while a discovery session is
+    /// alive AND something is observing it; KVO-ing here is what reliably
+    /// tells us the moment the iPhone shows up (or disappears) without polling.
+    var discoveryDevicesObservation: NSKeyValueObservation?
+    /// Idle session held open while the user has the iPhone slot selected
+    /// but no Continuity device is bound. An EMPTY AVCaptureSession won't
+    /// do — macOS only kicks off the Bonjour-style Continuity scan once a
+    /// session is running with at least one real video input. We attach
+    /// the built-in FaceTime HD camera (cheapest device available) so the
+    /// session is actually consuming camera frames, which is the documented
+    /// trigger for `.continuityCamera` device announcements.
+    let continuityWakeSession = AVCaptureSession()
+    /// Dedicated serial queue for ALL mutations of `continuityWakeSession`
+    /// (start/stop/begin/commit/addInput/removeInput). AVCaptureSession is
+    /// not thread-safe and throws an Objective-C exception (which crashes
+    /// the app via SIGABRT) if you call `commitConfiguration` on one thread
+    /// while `stopRunning` is firing on another. Funneling everything
+    /// through this queue guarantees serialization.
+    let wakeSessionQueue = DispatchQueue(label: "dev.markzzy.wake-session")
 
     // MARK: - Init / lifecycle
 
@@ -160,136 +249,44 @@ public final class AppModel: ObservableObject {
 
     deinit {
         deviceChangeTask?.cancel()
+        discoveryDevicesObservation?.invalidate()
         let center = NotificationCenter.default
         for token in deviceObservers { center.removeObserver(token) }
     }
 
     public func bootstrap() async {
+        let pid = Perf.begin("AppModel.bootstrap")
+        defer { Perf.end("AppModel.bootstrap", id: pid) }
+        // Camera TCC must be granted BEFORE the first read of
+        // `AVCaptureDevice.DiscoverySession.devices` for `.continuityCamera`
+        // — otherwise AVFoundation returns the discovery session's `.devices`
+        // without ever spinning up the Continuity scanner, and the iPhone
+        // simply never appears for the lifetime of the process.
+        let permID = Perf.begin("permissions.requestAll")
         await permissions.requestAll()
+        Perf.end("permissions.requestAll", id: permID)
+        // Start KVO on the shared discovery session FIRST, before any read of
+        // `.devices`. Apple's AVCam sample documents this ordering: KVO must
+        // be in place when the first iPhone announcement arrives.
+        observeDiscoveryDevices()
+        let devID = Perf.begin("refreshDevices")
         await refreshDevices()
+        Perf.end("refreshDevices", id: devID)
         if let screen = selectedScreen {
             await livePreview.start(for: screen)
         }
         applyMicMonitor()
         observeDeviceChanges()
+        // If user has the iPhone slot active, kick the wake session so macOS
+        // actually goes looking for the iPhone right now.
+        updateContinuityPolling()
     }
 
-    /// Listens for cameras / mics being plugged or unplugged at runtime
-    /// (USB cams, Continuity Camera, AirPods…). macOS sometimes fires the
-    /// notifications a few times in a row, so we debounce.
-    private func observeDeviceChanges() {
-        guard deviceObservers.isEmpty else { return }
-        let center = NotificationCenter.default
-        let queue = OperationQueue.main
-        let handler: (Notification) -> Void = { [weak self] _ in
-            Task { @MainActor in self?.scheduleDeviceRescan() }
-        }
-        deviceObservers.append(
-            center.addObserver(
-                forName: .AVCaptureDeviceWasConnected, object: nil, queue: queue, using: handler
-            )
-        )
-        deviceObservers.append(
-            center.addObserver(
-                forName: .AVCaptureDeviceWasDisconnected, object: nil, queue: queue, using: handler
-            )
-        )
-    }
+    // (Camera device management, KVO, wake session, refreshDevices,
+    //  handleDeviceChange and applyPreviewCamera live in
+    //  `AppModel+Cameras.swift`.)
 
-    private func scheduleDeviceRescan() {
-        deviceChangeTask?.cancel()
-        deviceChangeTask = Task { @MainActor [weak self] in
-            // Debounce — give macOS a moment to settle when several devices
-            // appear at once (e.g. picking up a USB hub).
-            try? await Task.sleep(nanoseconds: 250_000_000)
-            guard !Task.isCancelled, let self else { return }
-            self.handleDeviceChange()
-        }
-    }
-
-    private func handleDeviceChange() {
-        let previousCameraID = selectedCamera?.uniqueID
-        let previousMicID = selectedMic?.uniqueID
-
-        let newCameras = CameraCapture.listDevices(filter: deviceFilter)
-        let newMicrophones = AudioCapture.listDevices(filter: deviceFilter)
-        let hadContinuity = cameras.contains(where: { $0.deviceType == .continuityCamera })
-        let hasContinuityNow = newCameras.contains(where: { $0.deviceType == .continuityCamera })
-
-        cameras = newCameras
-        microphones = newMicrophones
-
-        // Camera selection logic.
-        if let prevID = previousCameraID,
-           let stillThere = newCameras.first(where: { $0.uniqueID == prevID }) {
-            // Auto-promote a Continuity Camera that just appeared, but only if
-            // the user wasn't actively recording (we don't yank devices mid-take).
-            if !hadContinuity, hasContinuityNow, case .recording = state {
-                selectedCamera = stillThere
-            } else if !hadContinuity, hasContinuityNow {
-                selectedCamera = newCameras.first(where: { $0.deviceType == .continuityCamera })
-            } else {
-                selectedCamera = stillThere
-            }
-        } else {
-            // Previously selected camera disappeared (or none). Pick the best.
-            let next = newCameras.first(where: { $0.deviceType == .continuityCamera }) ?? newCameras.first
-            selectedCamera = next
-            if case .recording = state, previousCameraID != nil {
-                state = .failed("The selected camera was disconnected.")
-                Task { await stopRecording() }
-            }
-        }
-
-        // Mic selection logic — simpler: keep current if present, otherwise pick first.
-        if let prevID = previousMicID,
-           let stillThere = newMicrophones.first(where: { $0.uniqueID == prevID }) {
-            selectedMic = stillThere
-        } else {
-            selectedMic = newMicrophones.first
-            if case .recording = state, previousMicID != nil {
-                state = .failed("The selected microphone was disconnected.")
-                Task { await stopRecording() }
-            }
-        }
-
-        applyPreviewCamera(selectedCamera)
-    }
-
-    public func refreshDevices() async {
-        screenSources = await ScreenCapture.listSources()
-        cameras = CameraCapture.listDevices(filter: deviceFilter)
-        microphones = AudioCapture.listDevices(filter: deviceFilter)
-        if selectedScreen == nil { selectedScreen = screenSources.first }
-        if selectedCamera == nil {
-            selectedCamera = cameras.first(where: { $0.deviceType == .continuityCamera }) ?? cameras.first
-        }
-        if selectedMic == nil { selectedMic = microphones.first }
-        applyPreviewCamera(selectedCamera)
-    }
-
-    public func applyPreviewCamera(_ device: AVCaptureDevice?) {
-        previewSession.beginConfiguration()
-        previewSession.sessionPreset = .medium
-        if let existing = previewInput {
-            previewSession.removeInput(existing)
-            previewInput = nil
-        }
-        if let device, let input = try? AVCaptureDeviceInput(device: device),
-           previewSession.canAddInput(input) {
-            previewSession.addInput(input)
-            previewInput = input
-        }
-        previewSession.commitConfiguration()
-        if previewInput != nil, !previewSession.isRunning {
-            let session = previewSession
-            DispatchQueue.global(qos: .userInitiated).async { session.startRunning() }
-        } else if previewInput == nil, previewSession.isRunning {
-            previewSession.stopRunning()
-        }
-    }
-
-    private func applyMicMonitor() {
+    func applyMicMonitor() {
         if case .recording = state { return }
         if let mic = selectedMic {
             micMonitor.start(with: mic)
@@ -364,6 +361,11 @@ public final class AppModel: ObservableObject {
         // the camera warm-up — we'll swap it for composed frames once they
         // start arriving.
         stopPreview()
+        // Same for the Continuity wake session — the recording pipeline will
+        // be the one to claim the camera. Also drop the placeholder input so
+        // the FaceTime HD device is free for the recording pipeline if it
+        // needs it.
+        stopContinuityWakeSession()
         micMonitor.stop()
         let outURL = defaultOutputURL()
         do {
@@ -461,7 +463,7 @@ public final class AppModel: ObservableObject {
         return m
     }
 
-    private func stopRecording() async {
+    func stopRecording() async {
         state = .finishing
         timer?.invalidate(); timer = nil
         recordingStart = nil
@@ -472,11 +474,13 @@ public final class AppModel: ObservableObject {
             applyPreviewCamera(selectedCamera)
             if let s = selectedScreen { await livePreview.start(for: s) }
             applyMicMonitor()
+            updateContinuityPolling()
             if let url { state = .done(url) } else { state = .idle }
         } catch {
             applyPreviewCamera(selectedCamera)
             if let s = selectedScreen { await livePreview.start(for: s) }
             applyMicMonitor()
+            updateContinuityPolling()
             state = .failed(error.localizedDescription)
         }
     }
@@ -545,59 +549,10 @@ public final class AppModel: ObservableObject {
         return "\(Int(r.width))×\(Int(r.height))"
     }
 
-    // MARK: - Output directory
-
-    private static func loadStoredOutputDirectory() -> URL {
-        if let path = UserDefaults.standard.string(forKey: Keys.outputDir), !path.isEmpty {
-            let url = URL(fileURLWithPath: path, isDirectory: true)
-            try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-            return url
-        }
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let dir = home.appendingPathComponent("Desktop/Videos", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
-    }
-
-    func defaultOutputURL() -> URL {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd-HHmmss"
-        try? FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
-        return outputDirectory.appendingPathComponent("Markzzy-\(fmt.string(from: Date())).mp4")
-    }
-
-    // MARK: - Library
-
-    public func listRecordedVideos() -> [VideoItem] {
-        let fm = FileManager.default
-        let dir = outputDirectory
-        guard let files = try? fm.contentsOfDirectory(
-            at: dir,
-            includingPropertiesForKeys: [.creationDateKey, .fileSizeKey],
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
-
-        return files
-            .filter { $0.pathExtension.lowercased() == "mp4" }
-            .map { url in
-                let values = try? url.resourceValues(forKeys: [.creationDateKey, .fileSizeKey])
-                return VideoItem(
-                    url: url,
-                    name: url.lastPathComponent,
-                    date: values?.creationDate ?? Date.distantPast,
-                    size: Int64(values?.fileSize ?? 0)
-                )
-            }
-            .sorted { $0.date > $1.date }
-    }
-
-    public func deleteVideo(_ url: URL) throws {
-        try FileManager.default.removeItem(at: url)
-    }
-
     // MARK: - Persistence
+    // (Library / output-directory helpers live in `AppModel+Library.swift`.)
 
-    private enum Keys {
+    enum Keys {
         static let outputDir         = "outputDirectoryPath"
         static let language          = "appLanguage"
         static let quality           = "recordingQuality"
@@ -610,6 +565,9 @@ public final class AppModel: ObservableObject {
         static let outputResolution  = "outputResolution"
         static let showAllDevices    = "showAllDevices"
         static let hiddenDeviceIDs   = "hiddenDeviceIDs"
+        static let allowVirtualCameras = "allowVirtualCameras"
+        static let wantsContinuityCamera = "wantsContinuityCamera"
+        static let iPhoneDisconnectFlag  = "iPhoneRecentlyDisconnected"
     }
 
     private static func loadFormat() -> OutputFormat {
@@ -655,89 +613,22 @@ public final class AppModel: ObservableObject {
         UserDefaults.standard.object(forKey: Keys.rememberFaceCam) as? Bool ?? true
     }
 
+    private static func loadWantsContinuity() -> Bool {
+        UserDefaults.standard.bool(forKey: Keys.wantsContinuityCamera)
+    }
+
     private static func loadDeviceFilter() -> DeviceFilter {
         let showAll = UserDefaults.standard.bool(forKey: Keys.showAllDevices)
         let hidden = (UserDefaults.standard.array(forKey: Keys.hiddenDeviceIDs) as? [String]) ?? []
-        return DeviceFilter(hideVirtualDevices: !showAll, hiddenDeviceIDs: Set(hidden))
-    }
-
-    // MARK: - Face cam persistence
-
-    private struct PersistedFaceCam: Codable {
-        var shape: String
-        var size: Double
-        var positionX: Double
-        var positionY: Double
-        var borderStyle: String
-        var borderColor: [Double]
-        var borderColor2: [Double]
-        var borderWidth: Double
-    }
-
-    struct FaceCamValues {
-        let shape: PIPShape
-        let size: CGFloat
-        let position: CGPoint
-        let border: PIPBorder
-    }
-
-    private static let defaultFaceCam = FaceCamValues(
-        shape: .circle,
-        size: 0.22,
-        position: CGPoint(x: 0.85, y: 0.88),
-        border: PIPBorder()
-    )
-
-    private static func loadedFaceCam() -> FaceCamValues {
-        // Only restore when the user opted in; on first launch we go with defaults.
-        let remember = UserDefaults.standard.object(forKey: Keys.rememberFaceCam) as? Bool ?? true
-        guard remember,
-              let data = UserDefaults.standard.data(forKey: Keys.faceCam),
-              let p = try? JSONDecoder().decode(PersistedFaceCam.self, from: data)
-        else { return defaultFaceCam }
-
-        let shape = PIPShape(rawValue: p.shape) ?? defaultFaceCam.shape
-        let style = PIPBorder.Style(rawValue: p.borderStyle) ?? .none
-        let c1 = Self.cgColor(from: p.borderColor) ?? defaultFaceCam.border.color
-        let c2 = Self.cgColor(from: p.borderColor2) ?? defaultFaceCam.border.color2
-        return FaceCamValues(
-            shape: shape,
-            size: CGFloat(p.size),
-            position: CGPoint(x: p.positionX, y: p.positionY),
-            border: PIPBorder(style: style, color: c1, color2: c2, width: CGFloat(p.borderWidth))
+        let allowVirtual = UserDefaults.standard.bool(forKey: Keys.allowVirtualCameras)
+        return DeviceFilter(
+            hideVirtualDevices: !showAll,
+            hiddenDeviceIDs: Set(hidden),
+            allowVirtualCameras: allowVirtual
         )
     }
 
-    private func saveFaceCamIfEnabled() {
-        guard rememberFaceCam else { return }
-        let data = PersistedFaceCam(
-            shape: pipShape.rawValue,
-            size: Double(pipSize),
-            positionX: Double(pipPosition.x),
-            positionY: Double(pipPosition.y),
-            borderStyle: pipBorder.style.rawValue,
-            borderColor: Self.rgbaComponents(of: pipBorder.color),
-            borderColor2: Self.rgbaComponents(of: pipBorder.color2),
-            borderWidth: Double(pipBorder.width)
-        )
-        if let encoded = try? JSONEncoder().encode(data) {
-            UserDefaults.standard.set(encoded, forKey: Keys.faceCam)
-        }
-    }
-
-    private static func rgbaComponents(of color: CGColor) -> [Double] {
-        guard let ns = NSColor(cgColor: color)?.usingColorSpace(.sRGB) else { return [0, 0, 0, 1] }
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 1
-        ns.getRed(&r, green: &g, blue: &b, alpha: &a)
-        return [Double(r), Double(g), Double(b), Double(a)]
-    }
-
-    private static func cgColor(from comps: [Double]) -> CGColor? {
-        guard comps.count >= 3 else { return nil }
-        let a = comps.count >= 4 ? CGFloat(comps[3]) : 1
-        return CGColor(red: CGFloat(comps[0]), green: CGFloat(comps[1]),
-                       blue: CGFloat(comps[2]), alpha: a)
-    }
+    // (Face cam persistence lives in `AppModel+FaceCam.swift`.)
 }
 
 public struct VideoItem: Identifiable, Hashable {

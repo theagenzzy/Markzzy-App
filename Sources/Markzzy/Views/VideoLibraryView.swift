@@ -100,7 +100,12 @@ struct VideoLibraryView: View {
         }
         .frame(width: 500, height: 720)
         .background(Color(NSColor.windowBackgroundColor))
-        .onAppear { reload() }
+        // Only scan the output directory when the Library tab is actually
+        // visible. Without this guard, .onAppear fires for the offscreen
+        // VideoLibraryView during cold launch (the ZStack instantiates all
+        // tabs), adding ~100-300 ms of synchronous FileManager I/O to the
+        // first paint.
+        .onAppear { if isActive { reload() } }
         .onChange(of: isActive) { _, now in
             if now { reload() }
         }

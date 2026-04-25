@@ -27,6 +27,7 @@ xcuserdata/
 # Claude Code — keep shared settings.json & skills, ignore personal overrides
 .claude/settings.local.json
 .claude/logs/
+.claude/scheduled_tasks.lock
 
 # Generated app bundle (shouldn't be in repo, just in case)
 Markzzy.app/

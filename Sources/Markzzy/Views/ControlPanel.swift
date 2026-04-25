@@ -127,10 +127,14 @@ struct ControlPanel: View {
                             }
                             sourceRow(icon: "video", label: model.t(.camera)) {
                                 HStack(spacing: 4) {
-                                    Picker("", selection: $model.selectedCamera) {
-                                        Text(model.t(.noneOption)).tag(Optional<AVCaptureDevice>(nil))
-                                        ForEach(model.cameras, id: \.uniqueID) {
-                                            Text(camLabel($0)).tag(Optional($0))
+                                    Picker("", selection: cameraPickerSelection) {
+                                        Text(model.t(.noneOption)).tag(CameraPickerTag.none)
+                                        // Sticky iPhone slot — always present so the
+                                        // user keeps the selection even if macOS
+                                        // drops Continuity Camera between sessions.
+                                        Text(iPhoneSlotLabel).tag(CameraPickerTag.iPhone)
+                                        ForEach(nonIPhoneCameras, id: \.uniqueID) {
+                                            Text(camLabel($0)).tag(CameraPickerTag.device($0.uniqueID))
                                         }
                                     }
                                     .labelsHidden()
@@ -869,8 +873,9 @@ struct ControlPanel: View {
 
     @ViewBuilder
     private func deviceOptionsMenu(for device: AVCaptureDevice?) -> some View {
+        let canHide = device.map { $0.deviceType != .continuityCamera } ?? false
         Menu {
-            if let d = device {
+            if let d = device, canHide {
                 Button {
                     model.hideDevice(uniqueID: d.uniqueID)
                 } label: {
@@ -886,10 +891,62 @@ struct ControlPanel: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .disabled(device == nil || isRecording)
+        .disabled(device == nil || isRecording || !canHide)
     }
 
     private func camLabel(_ d: AVCaptureDevice) -> String {
-        d.deviceType == .continuityCamera ? "\(d.localizedName) (iPhone)" : d.localizedName
+        DeviceFilter.looksLikeIPhone(d) ? "\(d.localizedName) (iPhone)" : d.localizedName
+    }
+
+    // MARK: - Camera picker (iPhone-aware)
+
+    enum CameraPickerTag: Hashable {
+        case none
+        case iPhone
+        case device(String)
+    }
+
+    private var nonIPhoneCameras: [AVCaptureDevice] {
+        model.cameras.filter { !DeviceFilter.looksLikeIPhone($0) }
+    }
+
+    private var iPhoneSlotLabel: String {
+        model.t(.cameraIPhoneSlot)
+    }
+
+    private var cameraPickerSelection: Binding<CameraPickerTag> {
+        Binding(
+            get: {
+                if model.wantsContinuityCamera { return .iPhone }
+                if let cam = model.selectedCamera {
+                    if DeviceFilter.looksLikeIPhone(cam) { return .iPhone }
+                    return .device(cam.uniqueID)
+                }
+                return .none
+            },
+            set: { tag in
+                switch tag {
+                case .none:
+                    model.wantsContinuityCamera = false
+                    model.selectedCamera = nil
+                case .iPhone:
+                    model.wantsContinuityCamera = true
+                    // Bind only to a REAL iPhone (score >= 2): native
+                    // Continuity, or a bridge that exposes the device
+                    // with its actual iPhone identity (modelID iPhone* or
+                    // name containing "iphone"). NEVER bind to generic
+                    // bridge cameras like "Camo Camera" — those are
+                    // virtual devices with no guaranteed iPhone frames.
+                    // If no real iPhone is present yet, leave selectedCamera
+                    // nil — the preview shows the "Looking for your iPhone…"
+                    // overlay and handleDeviceChange will bind as soon as
+                    // KVO surfaces the real device.
+                    model.selectedCamera = DeviceFilter.bestRealIPhone(in: model.cameras, minAffinity: model.deviceFilter.minIPhoneAffinity)
+                case .device(let id):
+                    model.wantsContinuityCamera = false
+                    model.selectedCamera = model.cameras.first(where: { $0.uniqueID == id })
+                }
+            }
+        )
     }
 }

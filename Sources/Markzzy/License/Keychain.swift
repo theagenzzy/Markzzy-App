@@ -3,7 +3,15 @@ import Security
 
 /// Thin wrapper around Keychain for storing a single generic-password item.
 enum Keychain {
-    private static let service = "tech.markzzy.Markzzy"
+    /// Use the running bundle's identifier so each build (local dev =
+    /// `dev.markzzy.app`, production = `tech.markzzy.Markzzy`) keeps its
+    /// own keychain items with ACLs that match its signing identity.
+    /// Hard-coding the production ID here would make local dev builds
+    /// prompt for keychain access every launch because the saved
+    /// item's ACL doesn't include the dev identity.
+    private static let service: String = {
+        Bundle.main.bundleIdentifier ?? "tech.markzzy.Markzzy"
+    }()
 
     static func set(_ value: String, for account: String) {
         guard let data = value.data(using: .utf8) else { return }

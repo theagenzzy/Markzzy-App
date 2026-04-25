@@ -232,6 +232,30 @@ struct LicenseActivationView: View {
                     )
             )
 
+            // "Did you mean…?" — fires when the typed domain matches
+            // a known typo (gmial→gmail, hotmal→hotmail, etc.). Critical
+            // because the backend silently swallows wrong emails (no
+            // enumeration), so without this the user would never know
+            // why their magic link never arrives.
+            if let suggestion = LicenseManager.suggestedCorrection(for: email) {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.orange)
+                    Text(String(format: model.t(.licenseDidYouMean), suggestion))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 4)
+                    Button(model.t(.licenseUseThis)) {
+                        email = suggestion
+                    }
+                    .buttonStyle(.link)
+                    .font(.footnote.weight(.semibold))
+                }
+                .padding(.horizontal, 4)
+                .padding(.top, 2)
+            }
+
             Button(action: runSendCode) {
                 Text(isBusy ? model.t(.licenseSending) : model.t(.licenseSendCode))
                     .frame(maxWidth: .infinity)
@@ -246,8 +270,7 @@ struct LicenseActivationView: View {
     }
 
     private func isValidEmail(_ s: String) -> Bool {
-        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.contains("@") && trimmed.contains(".")
+        LicenseManager.isValidEmail(LicenseManager.normalize(s))
     }
 
     // MARK: - Sent step
@@ -274,6 +297,16 @@ struct LicenseActivationView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
+                // Honest fallback: backend silently swallows non-customer
+                // emails (privacy: no enumeration), so users with the
+                // wrong email or no subscription will never get the
+                // link. Tell them what to do without revealing why.
+                Text(model.t(.licenseNoEmailArrivedHint))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 6)
             }
 
             HStack {

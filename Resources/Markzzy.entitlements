@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Capture device access (TCC-prompted at first use). -->
+    <key>com.apple.security.device.camera</key>
+    <true/>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+
+    <!-- Hardened Runtime exceptions, kept minimal:
+         Sparkle loads & launches a child Updater.app that's signed with a
+         different identity during auto-update. With Hardened Runtime
+         enabled, library validation would block that. This relaxes that
+         one rule; the rest of the runtime hardening stays on. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>
