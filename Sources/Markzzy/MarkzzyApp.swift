@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit   // NSApplication.didBecomeActiveNotification
 
 @main
 struct MarkzzyApp: App {
@@ -33,6 +34,18 @@ struct MarkzzyApp: App {
             .task {
                 license.start()
                 updates.start()
+            }
+            // Refresh the license whenever the user brings the app back
+            // to the foreground. Catches updates that landed server-side
+            // while the app was minimized for hours (cancel from web,
+            // payment cleared, plan changed) without waiting on the
+            // 30 min / 6 h periodic heartbeat. Foreground transitions
+            // are also when the user is most attentive — it's the right
+            // moment to surface state changes.
+            .onReceive(NotificationCenter.default.publisher(
+                for: NSApplication.didBecomeActiveNotification)
+            ) { _ in
+                Task { await license.refreshFromServer() }
             }
             .onOpenURL { url in
                 guard url.scheme == "markzzy", url.host == "activate" else { return }

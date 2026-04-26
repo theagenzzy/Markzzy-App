@@ -90,6 +90,54 @@ Watch the `Release` workflow in the Actions tab. On success:
 - Installed copies of Markzzy hit the appcast on their next periodic check
   and prompt the user to update.
 
+## JWT + heartbeat: evolution rules
+
+The Mac app keeps its license state across four layers — JWT in Keychain,
+`UserDefaults` cache, in-memory `@Published`, and the server heartbeat.
+The first three are derived from the fourth, but lag behind it. These
+rules keep that lag from becoming a footgun when the backend changes.
+
+### Hard rules
+
+1. **Claims are additive.** Never rename or remove a JWT claim. If you
+   absolutely must rename, write both the new and old name for 30 days,
+   then drop the old one and bump `JWT_SCHEMA_VERSION`.
+2. **Heartbeat response is additive.** The Mac decoder uses Swift's
+   `Decodable` which ignores unknown fields, so adding new fields is
+   safe. Don't mark anything `required` that the server might omit.
+3. **State machine fields always come from the heartbeat, never the
+   JWT.** `status`, `currentPeriodEnd`, `cancelAtPeriodEnd`,
+   `paymentFailedAt`, `paymentFailedCount` change mid-period without
+   re-issuing the JWT. The JWT is bootstrap + identity; the heartbeat
+   is the truth.
+4. **Bump `JWT_SCHEMA_VERSION` whenever the meaning of a claim
+   changes.** Both `markzzy-web/lib/jwt.ts` and
+   `Markzzy/Sources/Markzzy/License/LicenseManager.swift` need to bump
+   in the same release. The Mac app forces an immediate refresh on
+   launch when it sees a JWT older than its `currentJWTSchema`, so
+   users with stale tokens converge in one launch instead of waiting
+   hours for the periodic heartbeat.
+5. **Validate before deploying.** With `npm run dev` running, sign out
+   from the Mac app, sign in fresh, and confirm the new claim is
+   present in the heartbeat response. If the field is wrong the time
+   to catch it is now, not after Sparkle pushes the new app build.
+
+### Schema version cheatsheet
+
+| `JWT_SCHEMA_VERSION` | Added | Notes |
+|---|---|---|
+| 1 | bootstrap | implicit; absence of `v` claim |
+| 2 | `period_end` | trial countdown shows from first frame |
+
+### What "force a refresh" does
+
+When the Mac sees `claims.v < currentJWTSchema`, `LicenseManager.refreshStatus()`
+spawns a `Task { await refreshFromServer() }` — fires immediately,
+doesn't wait for the periodic heartbeat. The `/api/license/refresh`
+route mints a new JWT with the current schema and the Mac persists it
+to Keychain. From that moment the user is on the new schema for the
+lifetime of the JWT (7 days).
+
 ## Local update test (no Apple cert needed)
 
 Validates the entire Sparkle download → verify → install → relaunch loop

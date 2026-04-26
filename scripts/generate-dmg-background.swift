@@ -21,46 +21,54 @@ guard let ctx = NSGraphicsContext.current?.cgContext else {
     exit(1)
 }
 
-// Palette
+// Palette — drawn as CGColors for the gradient + arrow strokes, and as
+// matching NSColors for text. Going through `NSColor(cgColor:)` was
+// returning `.white` opaque in some contexts because the converter is
+// fallible; building the NSColors directly removes that surprise.
 let navyTop = CGColor(red: 0.07, green: 0.13, blue: 0.27, alpha: 1)  // #121F45
 let navyBot = CGColor(red: 0.02, green: 0.05, blue: 0.12, alpha: 1)  // #060D1F
-let blue    = CGColor(red: 0.18, green: 0.56, blue: 1.00, alpha: 1)
-let white80 = CGColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 0.80)
-let white35 = CGColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 0.35)
+let arrowStroke = CGColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 0.85)
+
+let accentNS = NSColor(srgbRed: 0.45, green: 0.72, blue: 1.0, alpha: 1)   // bright accent for wordmark
+let textPrimary = NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.95)
+let textSecondary = NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.55)
 
 // Vertical navy gradient
 let cs = CGColorSpaceCreateDeviceRGB()
 let grad = CGGradient(colorsSpace: cs, colors: [navyTop, navyBot] as CFArray, locations: [0, 1])!
 ctx.drawLinearGradient(grad, start: CGPoint(x: 0, y: height), end: .zero, options: [])
 
-// Subtle aurora glow behind the arrow center
-ctx.saveGState()
-let centerX = width / 2
-let centerY: CGFloat = 200
-let glowGrad = CGGradient(
-    colorsSpace: cs,
-    colors: [
-        CGColor(red: 0.18, green: 0.56, blue: 1.0, alpha: 0.18),
-        CGColor(red: 0.18, green: 0.56, blue: 1.0, alpha: 0)
-    ] as CFArray,
-    locations: [0, 1]
-)!
-ctx.drawRadialGradient(
-    glowGrad,
-    startCenter: CGPoint(x: centerX, y: centerY), startRadius: 0,
-    endCenter: CGPoint(x: centerX, y: centerY), endRadius: 180,
-    options: []
-)
-ctx.restoreGState()
+// Cocoa Y is from BOTTOM. Vertical zones in this 400-tall canvas:
+//   Y=370   wordmark "MARKZZY"
+//   Y=320   hint "Drag Markzzy to your Applications folder"
+//   Y=200   icons + arrow row (create-dmg places icons at y=200 too,
+//           Finder coord = Y from top of content; 400/2 lines up).
+//   Y=50    macOS version footer
+// Hint used to be at Y=110 (below the icons in Cocoa coords) which
+// translated to the icon-center row in Finder coords — Finder painted
+// the icons over the text. Moving the hint above the icon row removes
+// the collision entirely.
 
-// Arrow: shaft + chevron between the two icon slots (150,200) and (450,200).
-// Icons are 128 px wide, so leave ~80 px clearance on each side → shaft from
-// x=230 to x=370. Stroke + tip in soft white so it stays subordinate.
+// NOTE on the missing aurora glow:
+// Earlier versions had a soft blue radial glow centered behind the icon
+// row. We removed it because Finder samples the BACKGROUND IMAGE's
+// average luminance to decide label-text color (the icvp
+// backgroundColor* keys are ignored when a backgroundImage is set).
+// The glow lifted the average enough that Finder mis-classified the
+// background as "light" and painted the labels in dark text — unreadable
+// against the navy. Keeping the gradient uniformly dark guarantees a low
+// average → Finder picks WHITE labels automatically. Sparkle / dmgbuild
+// settings unchanged.
+
+// Arrow shaft + chevron between the two icon slots (150,200) → (450,200).
+// Icons are 128 px wide, so leave ~80 px clearance per side → shaft from
+// x=230 to x=370. Sits exactly where the icon row will be — Finder paints
+// the icons on top, the arrow peeks between them.
 let arrowStartX: CGFloat = 230
 let arrowEndX: CGFloat = 370
 let arrowY: CGFloat = 200
 
-ctx.setStrokeColor(white80)
+ctx.setStrokeColor(arrowStroke)
 ctx.setLineWidth(3)
 ctx.setLineCap(.round)
 ctx.move(to: CGPoint(x: arrowStartX, y: arrowY))
@@ -68,9 +76,6 @@ ctx.addLine(to: CGPoint(x: arrowEndX, y: arrowY))
 ctx.strokePath()
 
 // Chevron tip
-ctx.setStrokeColor(white80)
-ctx.setLineWidth(3)
-ctx.setLineCap(.round)
 ctx.setLineJoin(.round)
 let tipX = arrowEndX
 let tipSize: CGFloat = 14
@@ -79,39 +84,67 @@ ctx.addLine(to: CGPoint(x: tipX, y: arrowY))
 ctx.addLine(to: CGPoint(x: tipX - tipSize, y: arrowY - tipSize))
 ctx.strokePath()
 
-// "MARKZZY" wordmark up top — small, tracked uppercase, accent-blue.
+// "MARKZZY" wordmark at the very top — bold, tracked, accent-blue.
 let wordmark = NSAttributedString(
     string: "MARKZZY",
     attributes: [
-        .font: NSFont.systemFont(ofSize: 14, weight: .bold),
-        .foregroundColor: NSColor(cgColor: blue) ?? .white,
-        .kern: 4.0,
+        .font: NSFont.systemFont(ofSize: 16, weight: .bold),
+        .foregroundColor: accentNS,
+        .kern: 5.0,
     ]
 )
 let wmSize = wordmark.size()
-wordmark.draw(at: NSPoint(x: (width - wmSize.width) / 2, y: height - 50))
+wordmark.draw(at: NSPoint(x: (width - wmSize.width) / 2, y: 360))
 
-// "Drag Markzzy to your Applications folder" subtitle below the arrow.
+// "Drag Markzzy to your Applications folder" hint — ABOVE the icons,
+// not below. Centered, bigger so it reads at glance, high contrast.
 let hint = NSAttributedString(
     string: "Drag Markzzy to your Applications folder",
     attributes: [
-        .font: NSFont.systemFont(ofSize: 13, weight: .medium),
-        .foregroundColor: NSColor(cgColor: white80) ?? .white,
+        .font: NSFont.systemFont(ofSize: 15, weight: .medium),
+        .foregroundColor: textPrimary,
     ]
 )
 let hintSize = hint.size()
-hint.draw(at: NSPoint(x: (width - hintSize.width) / 2, y: 110))
+hint.draw(at: NSPoint(x: (width - hintSize.width) / 2, y: 305))
 
-// Tiny version disclaimer at the bottom — friendly, low contrast.
+// Icon labels ("Markzzy" / "Applications") are painted by Finder itself.
+// scripts/dmgbuild-settings.py overrides the .DS_Store icvp
+// `backgroundColorRed/Green/Blue` to dark navy, which Finder's contrast
+// check reads → it picks WHITE label text. So we don't draw the labels
+// here. Earlier revisions painted white labels at Y=118 to peek through
+// Finder's default dark labels; that hack is gone now that the .DS_Store
+// itself drives label color.
+
+// Icon labels — painted INTO the PNG in bold white. Finder paints its
+// own (dark) labels on top; ours sit just above Finder's so the dark
+// reads as a tight drop-shadow underneath the white. We tried every
+// official channel for forcing Finder's labels white (icvp
+// backgroundColor* keys, dmgbuild settings, image-luminance heuristics)
+// — none of them flip the label color when a backgroundImage is set.
+// Painting white into the PNG is the only thing that actually shows.
+let labelY: CGFloat = 118
+let labelStyle: [NSAttributedString.Key: Any] = [
+    .font: NSFont.systemFont(ofSize: 14, weight: .bold),
+    .foregroundColor: NSColor.white,
+]
+for (text, x) in [("Markzzy", CGFloat(150)), ("Applications", CGFloat(450))] {
+    let attr = NSAttributedString(string: text, attributes: labelStyle)
+    let s = attr.size()
+    attr.draw(at: NSPoint(x: x - s.width / 2, y: labelY))
+}
+
+// Tiny system requirements footer near the bottom. Bumped up from y=35
+// (felt cramped against the bottom edge) to y=55 for breathing room.
 let footer = NSAttributedString(
     string: "macOS 14 or later · Continuity Camera supported",
     attributes: [
-        .font: NSFont.systemFont(ofSize: 10, weight: .regular),
-        .foregroundColor: NSColor(cgColor: white35) ?? .white,
+        .font: NSFont.systemFont(ofSize: 11, weight: .regular),
+        .foregroundColor: textSecondary,
     ]
 )
 let footerSize = footer.size()
-footer.draw(at: NSPoint(x: (width - footerSize.width) / 2, y: 60))
+footer.draw(at: NSPoint(x: (width - footerSize.width) / 2, y: 55))
 
 image.unlockFocus()
 

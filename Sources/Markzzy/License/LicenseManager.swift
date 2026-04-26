@@ -80,6 +80,12 @@ public final class LicenseManager: ObservableObject {
         static let token = "licenseToken"
         static let email = "licenseEmail"
     }
+    /// UserDefaults key for the cached `currentPeriodEnd`. We persist this
+    /// across launches so the trial countdown shows a real number from the
+    /// first frame even when the device is offline (or the heartbeat is
+    /// still in flight). Without the cache the UI flashes "Trial active"
+    /// without a count for the seconds it takes the network to respond.
+    private static let cachedPeriodEndKey = "MARKZZY_CACHED_PERIOD_END"
 
     private var heartbeatTask: Task<Void, Never>?
 
@@ -179,6 +185,14 @@ public final class LicenseManager: ObservableObject {
     public init() {
         if let saved = Keychain.get(KC.email) {
             pendingEmail = saved
+        }
+        // Restore the last-known `currentPeriodEnd` from UserDefaults so the
+        // trial banner and License hero have a number to show on the very
+        // first frame, even if the heartbeat is offline / slow / not yet
+        // started. The next successful heartbeat overwrites this.
+        let cached = UserDefaults.standard.double(forKey: Self.cachedPeriodEndKey)
+        if cached > 0 {
+            currentPeriodEnd = Date(timeIntervalSince1970: cached)
         }
         // Local JWT decode + Keychain read — fast, must run sync so the
         // app shell knows whether to render the activation flow vs the
@@ -286,6 +300,17 @@ public final class LicenseManager: ObservableObject {
             paymentFailedAt = resp.paymentFailedAt.flatMap { Self.parseISO8601($0) }
             paymentFailedCount = resp.paymentFailedCount ?? 0
 
+            // Persist `currentPeriodEnd` so the next launch can show the
+            // trial countdown immediately, even if offline. Clearing on
+            // nil keeps the cache truthful when the user moves to a plan
+            // without a period (e.g. lifetime).
+            if let end = currentPeriodEnd {
+                UserDefaults.standard.set(end.timeIntervalSince1970,
+                                          forKey: Self.cachedPeriodEndKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.cachedPeriodEndKey)
+            }
+
             refreshStatus()
         } catch {
             // Network blip — keep current state, try again next tick.
@@ -323,6 +348,21 @@ public final class LicenseManager: ObservableObject {
         }
         status = .activated(plan: claims.plan, expiresAt: claims.expiresAt)
         activatedEmail = claims.email.isEmpty ? nil : claims.email
+        // Seed currentPeriodEnd from the JWT only when the heartbeat
+        // hasn't filled it yet — backend is always more authoritative
+        // (it sees mid-period upgrades/cancels), but this gets the trial
+        // countdown showing a real number from the very first frame.
+        if currentPeriodEnd == nil, let je = claims.periodEnd {
+            currentPeriodEnd = je
+        }
+        // If the JWT is from an older schema, fire an immediate refresh
+        // off-thread instead of waiting for the periodic heartbeat
+        // (which can be 30 min for trial mid-period or 6 h for steady
+        // state). The user opens an app that just got an update — they
+        // expect to see the new behavior right away, not in 6 hours.
+        if claims.schemaVersion < Self.currentJWTSchema {
+            Task { await refreshFromServer() }
+        }
     }
 
     /// Local-only sign out (used internally on 401 from refresh).
@@ -333,6 +373,10 @@ public final class LicenseManager: ObservableObject {
         lastError = nil
         status = .unactivated
         activatedEmail = nil
+        currentPeriodEnd = nil
+        // Clear cached state too — leaving it would cause the next user to
+        // sign in and briefly see the previous user's trial countdown.
+        UserDefaults.standard.removeObject(forKey: Self.cachedPeriodEndKey)
     }
 
     /// Wipes the remembered email (used by "Use a different email" link).
@@ -369,12 +413,19 @@ public final class LicenseManager: ObservableObject {
 
     /// Drives the "Upgrade" CTAs in trial banners and lock screens.
     /// Lands on the dashboard with action=upgrade so the web can
-    /// auto-open the Monthly/Lifetime upgrade modal.
-    public func openUpgrade() {
-        if let url = webURL(path: "dashboard", query: [
+    /// auto-open the Monthly/Lifetime upgrade modal. Pass `plan` to
+    /// pre-select Monthly or Lifetime in the modal — used by the hero's
+    /// segmented picker so the user lands directly on the right checkout
+    /// instead of choosing again on the web.
+    public func openUpgrade(plan: String? = nil) {
+        var items: [URLQueryItem] = [
             URLQueryItem(name: "action", value: "upgrade"),
             emailQueryItem,
-        ]) {
+        ]
+        if let plan = plan {
+            items.append(URLQueryItem(name: "plan", value: plan))
+        }
+        if let url = webURL(path: "dashboard", query: items) {
             NSWorkspace.shared.open(url)
         }
     }
@@ -667,10 +718,25 @@ public final class LicenseManager: ObservableObject {
 
     // MARK: - JWT payload decoding (no signature verification)
 
+    /// Schema version this build of the Mac app expects from the JWT.
+    /// MUST equal `JWT_SCHEMA_VERSION` in `markzzy-web/lib/jwt.ts`. When
+    /// the backend bumps its version and we ship a Mac update bumping
+    /// this constant, any user whose JWT is older than this value gets
+    /// an immediate `/api/license/refresh` on next launch instead of
+    /// waiting hours for the periodic heartbeat — see `refreshStatus()`.
+    public static let currentJWTSchema: Int = 2
+
     struct Claims {
         let plan: String
         let expiresAt: Date
         let email: String
+        /// Trial / billing period end embedded in the JWT by the backend.
+        /// Lets the trial countdown render from the first frame, even
+        /// before the heartbeat lands. Nil for lifetime users.
+        let periodEnd: Date?
+        /// Schema version of this JWT. Older than `currentJWTSchema` →
+        /// triggers an immediate refresh.
+        let schemaVersion: Int
     }
 
     static func decodeClaims(from token: String) -> Claims? {
@@ -683,7 +749,13 @@ public final class LicenseManager: ObservableObject {
               let plan = obj["plan"] as? String
         else { return nil }
         let email = obj["email"] as? String ?? ""
-        return Claims(plan: plan, expiresAt: Date(timeIntervalSince1970: exp), email: email)
+        let periodEnd = (obj["period_end"] as? String).flatMap { Self.parseISO8601($0) }
+        // Default to 1 (the implicit pre-versioning era). A JWT with no
+        // `v` claim came from a backend before we added the field, so
+        // it's by definition older than anything we'd ship today.
+        let schemaVersion = obj["v"] as? Int ?? 1
+        return Claims(plan: plan, expiresAt: Date(timeIntervalSince1970: exp),
+                      email: email, periodEnd: periodEnd, schemaVersion: schemaVersion)
     }
 
     private static func base64urlDecode(_ input: String) -> Data? {

@@ -145,6 +145,11 @@ public enum LKey: String, CaseIterable {
     case licenseHeroNextRenewalFormat       // "Next renewal on %@."
     case licenseHeroUpgradeButton           // "Upgrade · $10/mo"
     case licenseHeroLifetimeUpsell          // "Lifetime $129 →"
+    // Hero plan picker (segmented switch between Monthly and Lifetime)
+    case licenseHeroPlanPickerLabel         // "Pick a plan to upgrade to"
+    case licenseHeroPlanMonthlyLine         // "Mensual · $10/mes"
+    case licenseHeroPlanLifetimeLine        // "Vitalicio · $129 una vez"
+    case licenseHeroActivatePlan            // "Activar plan →"
 
     // License: state-driven cards (past due / cancel-at-period-end)
     case licensePastDueTitle                // "⚠️ Payment failed"
@@ -190,6 +195,15 @@ public enum LKey: String, CaseIterable {
     case outputStorageLessThanHour
     case outputStorageHoursFormat           // "%d hours"
     case outputStorageDaysFormat            // "%d days"
+
+    // Library — clarity polish (friendly titles, button labels, tooltips)
+    case libraryRecordingTitleFormat        // "Recording · %@" (date)
+    case libraryEmptyHeadline               // "Your first recording will appear here"
+    case libraryEmptySubcopy                // "Switch to the Record tab to capture one."
+    case libraryAccountTooltip              // "Account & license"
+    case libraryActionPlay                  // "Play"
+    case libraryActionShowInFinder          // "Show in Finder"
+    case libraryActionDelete                // "Delete"
 }
 
 public enum L10n {
@@ -368,6 +382,10 @@ public enum L10n {
             .licenseHeroNextRenewalFormat: "Next renewal on %@.",
             .licenseHeroUpgradeButton: "Upgrade · $10/mo",
             .licenseHeroLifetimeUpsell: "Lifetime $129 →",
+            .licenseHeroPlanPickerLabel: "Choose a plan to upgrade to",
+            .licenseHeroPlanMonthlyLine: "Monthly · $10/mo",
+            .licenseHeroPlanLifetimeLine: "Lifetime · $129 once",
+            .licenseHeroActivatePlan: "Activate plan →",
 
             .licensePastDueTitle: "⚠️ Payment failed",
             .licensePastDueBody: "PayPal is retrying your card. Update your payment method to avoid losing access.",
@@ -409,6 +427,14 @@ public enum L10n {
             .outputStorageLessThanHour: "less than an hour",
             .outputStorageHoursFormat: "%d hours",
             .outputStorageDaysFormat: "%d days",
+
+            .libraryRecordingTitleFormat: "Recording · %@",
+            .libraryEmptyHeadline: "Your first recording will appear here",
+            .libraryEmptySubcopy: "Switch to the Record tab to capture one.",
+            .libraryAccountTooltip: "Account & license",
+            .libraryActionPlay: "Play",
+            .libraryActionShowInFinder: "Finder",
+            .libraryActionDelete: "Delete",
         ],
         .es: [
             .tabRecord: "Grabar", .tabLibrary: "Biblioteca", .tabSettings: "Ajustes",
@@ -585,6 +611,10 @@ public enum L10n {
             .licenseHeroNextRenewalFormat: "Próxima renovación el %@.",
             .licenseHeroUpgradeButton: "Actualizar · $10/mes",
             .licenseHeroLifetimeUpsell: "Vitalicio $129 →",
+            .licenseHeroPlanPickerLabel: "Elegí un plan para actualizar",
+            .licenseHeroPlanMonthlyLine: "Mensual · $10/mes",
+            .licenseHeroPlanLifetimeLine: "Vitalicio · $129 una vez",
+            .licenseHeroActivatePlan: "Activar plan →",
 
             .licensePastDueTitle: "⚠️ Pago fallido",
             .licensePastDueBody: "PayPal está reintentando tu tarjeta. Actualizá el método de pago para no perder el acceso.",
@@ -626,6 +656,14 @@ public enum L10n {
             .outputStorageLessThanHour: "menos de una hora",
             .outputStorageHoursFormat: "%d horas",
             .outputStorageDaysFormat: "%d días",
+
+            .libraryRecordingTitleFormat: "Grabación · %@",
+            .libraryEmptyHeadline: "Tu primera grabación aparecerá acá",
+            .libraryEmptySubcopy: "Andá a la pestaña Grabar para empezar.",
+            .libraryAccountTooltip: "Cuenta y licencia",
+            .libraryActionPlay: "Ver",
+            .libraryActionShowInFinder: "Finder",
+            .libraryActionDelete: "Borrar",
         ],
     ]
 

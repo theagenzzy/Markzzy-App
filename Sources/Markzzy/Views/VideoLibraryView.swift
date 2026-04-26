@@ -8,6 +8,10 @@ struct VideoLibraryView: View {
     @State private var items: [VideoItem] = []
     @State private var thumbnails: [URL: NSImage] = [:]
     @State private var aspects: [URL: CGFloat] = [:]
+    /// Duration in seconds, lazily loaded per video. Shown next to size in
+    /// the card so the user can tell a 30 s clip from a 5 min one without
+    /// opening it.
+    @State private var durations: [URL: TimeInterval] = [:]
     @State private var pendingDelete: VideoItem?
     @State private var isSelecting: Bool = false
     @State private var selected: Set<URL> = []
@@ -80,6 +84,11 @@ struct VideoLibraryView: View {
                                     item: item,
                                     thumbnail: thumbnails[item.url],
                                     aspect: aspects[item.url] ?? 16.0 / 9.0,
+                                    duration: durations[item.url],
+                                    // 3-column reels grid is too narrow
+                                    // (~150 px) for icon + label buttons.
+                                    // YouTube/Post stay with text.
+                                    compact: filter == .reel,
                                     selectable: isSelecting,
                                     isSelected: selected.contains(item.url),
                                     onPreview: { handleTap(item) },
@@ -129,10 +138,14 @@ struct VideoLibraryView: View {
     }
 
     private var formatTabs: some View {
+        // Each tab shows the format name + a count of matching recordings,
+        // so the user immediately sees "YouTube has 2, Reels 1, Post 0"
+        // and doesn't waste a click on an empty filter.
         HStack(spacing: 8) {
             Picker("", selection: $filter) {
                 ForEach(LibraryFormat.allCases, id: \.rawValue) { fmt in
-                    Text(model.t(fmt.titleKey)).tag(fmt)
+                    let count = items(in: fmt).count
+                    Text("\(model.t(fmt.titleKey)) (\(count))").tag(fmt)
                 }
             }
             .pickerStyle(.segmented)
@@ -187,6 +200,7 @@ struct VideoLibraryView: View {
             )
             .help(model.t(.reload))
             AccountMenu()
+                .help(model.t(.libraryAccountTooltip))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -302,19 +316,26 @@ struct VideoLibraryView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 12) {
             Spacer()
-            Image(systemName: "film")
-                .font(.system(size: 42))
-                .foregroundStyle(.secondary)
-            Text(model.t(.noRecordingsYet))
+            ZStack {
+                Circle()
+                    .fill(Color.accentColor.opacity(0.12))
+                    .frame(width: 80, height: 80)
+                Image(systemName: "film.fill")
+                    .font(.system(size: 36))
+                    .foregroundStyle(Color.accentColor)
+            }
+            Text(model.t(.libraryEmptyHeadline))
                 .font(.headline)
+            Text(model.t(.libraryEmptySubcopy))
+                .font(.callout)
                 .foregroundStyle(.secondary)
-            Text(model.t(.videosAppearHere))
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer()
         }
+        .padding(.horizontal, 32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -335,24 +356,32 @@ struct VideoLibraryView: View {
     private func loadThumbnail(for item: VideoItem) async {
         if thumbnails[item.url] != nil { return }
         let url = item.url
-        struct ThumbnailResult: Sendable { let image: NSImage?; let aspect: CGFloat? }
+        struct ThumbnailResult: Sendable { let image: NSImage?; let aspect: CGFloat?; let duration: TimeInterval? }
         let result: ThumbnailResult = await Task.detached(priority: .utility) {
             let asset = AVURLAsset(url: url)
             let gen = AVAssetImageGenerator(asset: asset)
             gen.appliesPreferredTrackTransform = true
             gen.maximumSize = CGSize(width: 480, height: 480)
             let time = CMTime(seconds: 0.1, preferredTimescale: 600)
+            // Read duration alongside the thumbnail in the same detached
+            // task so we touch the asset's tracks once instead of twice.
+            // Fail-soft: if duration load throws we just skip showing it,
+            // never block the thumbnail render.
+            let duration: TimeInterval? = (try? await asset.load(.duration))
+                .map { CMTimeGetSeconds($0) }
+                .flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
             do {
                 let cg = try await gen.image(at: time).image
                 let aspect = CGFloat(cg.width) / CGFloat(max(cg.height, 1))
-                return ThumbnailResult(image: NSImage(cgImage: cg, size: .zero), aspect: aspect)
+                return ThumbnailResult(image: NSImage(cgImage: cg, size: .zero), aspect: aspect, duration: duration)
             } catch {
-                return ThumbnailResult(image: nil, aspect: nil)
+                return ThumbnailResult(image: nil, aspect: nil, duration: duration)
             }
         }.value
         await MainActor.run {
             thumbnails[url] = result.image
             if let a = result.aspect { aspects[url] = a }
+            if let d = result.duration { durations[url] = d }
         }
     }
 }
@@ -362,6 +391,10 @@ private struct VideoCard: View {
     let item: VideoItem
     let thumbnail: NSImage?
     let aspect: CGFloat
+    var duration: TimeInterval? = nil
+    /// True for the 3-column reels grid where there's no room for text
+    /// labels — falls back to icon-only buttons with tooltips.
+    var compact: Bool = false
     var selectable: Bool = false
     var isSelected: Bool = false
     let onPreview: () -> Void
@@ -414,14 +447,24 @@ private struct VideoCard: View {
             .contentShape(Rectangle())
             .onTapGesture { onPreview() }
 
-            Text(item.name)
+            // Friendly headline: "Recording · Apr 23, 22:03" instead of
+            // the raw "Markzzy-2026-04-23-220320.mp4" filename. Real
+            // filename remains in the tooltip + context menu for power
+            // users who care about the exact path.
+            Text(String(format: model.t(.libraryRecordingTitleFormat),
+                        Self.dateFormatter.string(from: item.date)))
                 .font(.caption.weight(.medium))
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .help(item.name)
 
+            // Metadata row: duration · size. Skip duration if AVAsset
+            // hasn't loaded yet — a missing dot beats a bogus "0:00".
             HStack(spacing: 4) {
-                Text(Self.dateFormatter.string(from: item.date))
-                Text("·")
+                if let d = duration {
+                    Text(Self.formatDuration(d))
+                    Text("·")
+                }
                 Text(item.sizeFormatted)
             }
             .font(.caption2)
@@ -429,10 +472,17 @@ private struct VideoCard: View {
 
             if !selectable {
                 HStack(spacing: 6) {
-                    iconButton(icon: "play.fill",  help: model.t(.watchAction), action: onPreview)
-                    iconButton(icon: "folder",     help: model.t(.showInFinder), action: onReveal)
-                    Spacer()
-                    iconButton(icon: "trash",      help: model.t(.deleteAction), tint: .red, action: onDelete)
+                    labeledButton(icon: "play.fill",
+                                  label: model.t(.libraryActionPlay),
+                                  action: onPreview)
+                    labeledButton(icon: "folder",
+                                  label: model.t(.libraryActionShowInFinder),
+                                  action: onReveal)
+                    Spacer(minLength: 4)
+                    labeledButton(icon: "trash",
+                                  label: model.t(.libraryActionDelete),
+                                  tint: .red,
+                                  action: onDelete)
                 }
             }
         }
@@ -449,27 +499,61 @@ private struct VideoCard: View {
         }
     }
 
-    private func iconButton(icon: String, help: String, tint: Color = .primary, action: @escaping () -> Void) -> some View {
+    /// Small action button. In wide cards (2-column youtube/post grids)
+    /// shows icon + text label. In narrow cards (3-column reels grid)
+    /// drops the label and relies on the tooltip — there's no room for
+    /// text without truncation or wrapping.
+    private func labeledButton(icon: String, label: String,
+                               tint: Color = .primary,
+                               action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 11, weight: .semibold))
-                .frame(width: 24, height: 22)
-                .foregroundStyle(tint)
-                .contentShape(Rectangle())
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 10, weight: .semibold))
+                if !compact {
+                    Text(label)
+                        .font(.system(size: 10, weight: .medium))
+                        .lineLimit(1)
+                }
+            }
+            .padding(.horizontal, compact ? 6 : 7)
+            .padding(.vertical, 4)
+            .foregroundStyle(tint)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .background(
             RoundedRectangle(cornerRadius: 5)
-                .fill(Color.secondary.opacity(0.12))
+                .fill(tint == .red
+                      ? Color.red.opacity(0.12)
+                      : Color.secondary.opacity(0.12))
         )
-        .help(help)
+        .help(label)
     }
 
+    /// Locale-aware compact format: "Apr 23, 22:03" in English (24h
+    /// locales) or "23 abr, 22:03" in Spanish. `setLocalizedDateFormat`
+    /// drops the year automatically + respects the user's clock style
+    /// (12h vs 24h). `.medium` was returning the year + "at" filler
+    /// which made every title overflow the 245 px card width in 2-col
+    /// grids.
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.dateStyle = .medium
-        f.timeStyle = .short
+        f.setLocalizedDateFormatFromTemplate("MMMd jm")
         return f
     }()
+
+    /// "1:23" for under an hour, "1:02:34" past it. Matches Quick Time
+    /// Player's display so users feel at home.
+    static func formatDuration(_ seconds: TimeInterval) -> String {
+        let s = Int(seconds.rounded())
+        let h = s / 3600
+        let m = (s % 3600) / 60
+        let sec = s % 60
+        if h > 0 {
+            return String(format: "%d:%02d:%02d", h, m, sec)
+        }
+        return String(format: "%d:%02d", m, sec)
+    }
 }
 

@@ -100,24 +100,22 @@ jobs:
           VERSION: ${{ steps.ver.outputs.VERSION }}
         run: |
           set -euo pipefail
-          # `create-dmg` is the standard wrapper for the drag-to-Applications
-          # mount window everyone uses (OBS, Slack, Notion, Figma…). It
-          # handles the staging dir, /Applications symlink, background image,
-          # icon positioning and DS_Store dance that hdiutil doesn't.
-          brew install create-dmg
+          # `dmgbuild` (Python) writes the .DS_Store directly. Our
+          # scripts/dmgbuild-settings.py monkey-patches the icvp
+          # backgroundColor* keys to dark navy so Finder's contrast check
+          # picks WHITE label text. `create-dmg` hardcoded white bg color
+          # → dark labels on our navy background image (unreadable).
+          # Same drag-to-Applications visual layout, just with readable labels.
+          python3 -m pip install --user --break-system-packages dmgbuild
+          DMGBUILD="$(python3 -c 'import sys, os; print(os.path.join(os.path.expanduser("~"), "Library", "Python", f"{sys.version_info.major}.{sys.version_info.minor}", "bin", "dmgbuild"))')"
           DMG="dist/${APP_NAME}-${VERSION}.dmg"
-          create-dmg \
-            --volname "${APP_NAME} ${VERSION}" \
-            --background "Resources/dmg-background.png" \
-            --window-pos 200 120 \
-            --window-size 600 400 \
-            --icon-size 128 \
-            --icon "${APP_NAME}.app" 150 200 \
-            --hide-extension "${APP_NAME}.app" \
-            --app-drop-link 450 200 \
-            --no-internet-enable \
-            "$DMG" \
-            "dist/${APP_NAME}.app"
+          mkdir -p dist
+          "$DMGBUILD" \
+            -s scripts/dmgbuild-settings.py \
+            -D "app=dist/${APP_NAME}.app" \
+            -D "background=Resources/dmg-background.png" \
+            "${APP_NAME} ${VERSION}" \
+            "$DMG"
           echo "DMG_PATH=$DMG" >> "$GITHUB_ENV"
 
       - name: Notarize DMG

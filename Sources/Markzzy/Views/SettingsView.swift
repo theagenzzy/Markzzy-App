@@ -18,6 +18,10 @@ struct SettingsView: View {
         var id: String { rawValue }
     }
     @State private var section: Section = .general
+    /// Persists across launches so the user's last pick stays selected
+    /// between Settings opens. Default is monthly because most trial →
+    /// paid conversions choose the recurring plan first.
+    @AppStorage("licenseUpgradePlanChoice") private var selectedUpgradePlan: String = "monthly"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -82,7 +86,7 @@ struct SettingsView: View {
                 .buttonStyle(.borderless)
                 .font(.caption)
                 .disabled(!updates.canCheckForUpdates)
-            Text("0.1.0").font(.caption).foregroundStyle(.tertiary)
+            Text("0.1.1").font(.caption).foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -129,7 +133,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Markzzy")
                             .font(.headline)
-                        Text("\(model.t(.appVersion)) 0.1.0")
+                        Text("\(model.t(.appVersion)) 0.1.1")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -673,23 +677,20 @@ struct SettingsView: View {
     }
 
     private var licenseBox: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 12) {
             if case let .activated(plan, expiresAt) = license.status {
                 // One consolidated status card — plan + days + primary CTA.
-                // Replaces the old hero+countdown pair which showed conflicting
-                // day counts (one read JWT exp, the other read currentPeriodEnd).
                 licenseStatusHero(plan: plan, expiresAt: expiresAt)
                 if license.paymentPastDue { pastDueCard() }
                 if let endsAt = license.willEndAt { cancelAtPeriodEndCard(endsAt: endsAt) }
                 licenseDetailsStrip(expiresAt: expiresAt)
+                // Single-column What's Included. The plan comparison lives
+                // inside the upgrade modal on the dashboard now — clicking
+                // "Activate plan →" opens it pre-selected, so the user
+                // sees the comparison there. Side-by-side in 500 px broke
+                // the comparison table's column widths and made it
+                // unreadable; one source of truth is cleaner anyway.
                 whatsIncludedCard()
-                // Comparison table is upsell-flavored — only useful while
-                // trialing (when the user is actively choosing) or to nudge
-                // monthly users toward Lifetime. Hide for Lifetime users
-                // (nothing to compare to) and canceled users (different ask).
-                if license.isTrialing || (license.isMonthlyActive && !license.cancelAtPeriodEnd) {
-                    comparePlansCard()
-                }
                 licenseActionsRow()
             } else {
                 licenseInactiveCard()
@@ -803,11 +804,12 @@ struct SettingsView: View {
         .padding(.vertical, 7)
     }
 
-    /// Status hero — compact horizontal layout. Plan pill + Upgrade button
-    /// share the top row (button is small, sized to its content — no more
-    /// full-width blue bar). Big day-count below, then a single-line
-    /// subline with the inline Lifetime upsell. Tone drifts blue→orange→red
-    /// in the last 3 days for urgency.
+    /// Status hero — pill + headline + subline + plan picker (only when
+    /// trialing). The picker is a segmented switch between Monthly and
+    /// Lifetime; the user makes the choice in the app and lands directly
+    /// on the right checkout in the dashboard. Replaces the old single
+    /// CTA + tiny "Lifetime $129 →" link, which made Lifetime feel
+    /// secondary even though it's the better long-term value.
     private func licenseStatusHero(plan: String, expiresAt: Date) -> some View {
         let (planLabel, planTint) = planLabelAndTint(for: plan)
         let isTrial = license.isTrialing
@@ -817,54 +819,33 @@ struct SettingsView: View {
             return d <= 1 ? .red : d <= 3 ? .orange : .blue
         }()
 
-        return VStack(alignment: .leading, spacing: 8) {
-            // Top row: pill on the left, compact CTA on the right.
-            HStack(alignment: .center, spacing: 8) {
-                HStack(spacing: 6) {
-                    Circle().fill(tone).frame(width: 6, height: 6)
-                    Text(planLabel.uppercased())
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(tone)
-                        .tracking(0.6)
-                }
+        return VStack(alignment: .leading, spacing: 10) {
+            // Top row: pill (with day count appended when known) + compact
+            // primary CTA only when not trialing-with-picker (avoids
+            // double-action below).
+            HStack(spacing: 6) {
+                Circle().fill(tone).frame(width: 6, height: 6)
+                Text(pillText(planLabel: planLabel, daysLeft: daysLeft).uppercased())
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(tone)
+                    .tracking(0.6)
                 Spacer()
-                if isTrial {
-                    Button { license.openUpgrade() } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.up.circle.fill")
-                                .font(.system(size: 11))
-                            Text(model.t(.licenseHeroUpgradeButton))
-                                .font(.system(size: 11, weight: .semibold))
-                        }
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 2)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .tint(tone)
-                }
             }
-            // Big primary line — the headline number.
-            Text(heroPrimaryText(daysLeft: daysLeft, plan: plan))
-                .font(.system(size: 22, weight: .bold))
-                .foregroundStyle(.primary)
-            // Single-line subline + inline Lifetime upsell.
-            HStack(spacing: 5) {
+            // Headline + subline.
+            VStack(alignment: .leading, spacing: 3) {
+                Text(heroPrimaryText(daysLeft: daysLeft, plan: plan))
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(.primary)
                 Text(heroSecondaryText(plan: plan, expiresAt: expiresAt))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
-                if isTrial {
-                    Button { license.openUpgrade() } label: {
-                        Text(model.t(.licenseHeroLifetimeUpsell))
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(tone)
-                            .underline()
-                    }
-                    .buttonStyle(.plain)
-                }
-                Spacer(minLength: 0)
+            }
+            // Plan picker — only when trialing (the only state where the
+            // user has a meaningful choice between Monthly and Lifetime).
+            if isTrial {
+                upgradePlanPicker(tone: tone)
             }
         }
         .padding(14)
@@ -875,6 +856,45 @@ struct SettingsView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 12).stroke(tone.opacity(0.22), lineWidth: 1)
         )
+    }
+
+    /// Segmented picker between Monthly and Lifetime + a single Activate
+    /// button that opens the dashboard pre-selected to the chosen plan.
+    /// Defaults to Monthly because most trial → paid conversions go to
+    /// the recurring plan first, but Lifetime is one click away with no
+    /// visual demotion.
+    private func upgradePlanPicker(tone: Color) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("", selection: $selectedUpgradePlan) {
+                Text(model.t(.licenseHeroPlanMonthlyLine)).tag("monthly")
+                Text(model.t(.licenseHeroPlanLifetimeLine)).tag("lifetime")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            Button { license.openUpgrade(plan: selectedUpgradePlan) } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 12))
+                    Text(model.t(.licenseHeroActivatePlan))
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.regular)
+            .tint(tone)
+        }
+        .padding(.top, 4)
+    }
+
+    private func pillText(planLabel: String, daysLeft: Int?) -> String {
+        // When we know how many days are left, append the count to the
+        // pill so the "X days left" shows up at a glance even when the
+        // headline already said it. Redundant for trial callouts but the
+        // pill is the most-glanced label in the License section.
+        guard let d = daysLeft else { return planLabel }
+        return "\(planLabel) · \(d)d"
     }
 
     private func heroPrimaryText(daysLeft: Int?, plan: String) -> String {

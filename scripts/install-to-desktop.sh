@@ -86,8 +86,8 @@ cat > "$BUNDLE/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key><string>Markzzy</string>
     <key>CFBundleDisplayName</key><string>Markzzy</string>
     <key>CFBundleIdentifier</key><string>dev.markzzy.app</string>
-    <key>CFBundleVersion</key><string>1</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleVersion</key><string>2</string>
+    <key>CFBundleShortVersionString</key><string>0.1.1</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleExecutable</key><string>Markzzy</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
