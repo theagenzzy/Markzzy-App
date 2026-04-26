@@ -269,12 +269,23 @@ public final class AppModel: ObservableObject {
         // `.devices`. Apple's AVCam sample documents this ordering: KVO must
         // be in place when the first iPhone announcement arrives.
         observeDiscoveryDevices()
+        // Kick the screen preview off as a fire-and-forget Task BEFORE
+        // awaiting device enumeration. Both touch different subsystems
+        // (ScreenCaptureKit vs AVFoundation) and both take ~500 ms cold;
+        // sequential cost was ~1 s. With this split the preview canvas
+        // appears in parallel with — and often before — the camera
+        // dropdown finishes populating. Async let didn't fit because its
+        // closure can't reach MainActor-isolated properties.
+        if let screen = selectedScreen {
+            Task {
+                let prevID = Perf.begin("livePreview.start")
+                await livePreview.start(for: screen)
+                Perf.end("livePreview.start", id: prevID)
+            }
+        }
         let devID = Perf.begin("refreshDevices")
         await refreshDevices()
         Perf.end("refreshDevices", id: devID)
-        if let screen = selectedScreen {
-            await livePreview.start(for: screen)
-        }
         applyMicMonitor()
         observeDeviceChanges()
         // If user has the iPhone slot active, kick the wake session so macOS

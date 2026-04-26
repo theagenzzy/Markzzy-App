@@ -32,14 +32,50 @@ if [ -d "$BUILD_DIR/Sparkle.framework" ]; then
     cp -R "$BUILD_DIR/Sparkle.framework" "$BUNDLE/Contents/MacOS/Sparkle.framework"
 fi
 
+# Build the LSEnvironment block. Each known env var, if set in the shell,
+# gets baked into Info.plist so the app reads it via ProcessInfo even when
+# launched from Finder (which doesn't inherit shell env).
+LS_ENV_PAIRS=""
+for var in MARKZZY_API_BASE MARKZZY_APPCAST_URL; do
+    val="$(eval "echo \${$var:-}")"
+    if [ -n "$val" ]; then
+        echo "==> Baking $var=$val into Info.plist"
+        LS_ENV_PAIRS="${LS_ENV_PAIRS}
+        <key>${var}</key><string>${val}</string>"
+    fi
+done
+
 LS_ENV_BLOCK=""
-if [ -n "${MARKZZY_API_BASE:-}" ]; then
-    echo "==> Baking MARKZZY_API_BASE=$MARKZZY_API_BASE into Info.plist"
+if [ -n "$LS_ENV_PAIRS" ]; then
     LS_ENV_BLOCK="
     <key>LSEnvironment</key>
-    <dict>
-        <key>MARKZZY_API_BASE</key><string>${MARKZZY_API_BASE}</string>
+    <dict>${LS_ENV_PAIRS}
     </dict>"
+fi
+
+# Sparkle test mode — flips automatic checks on, points the updater at the
+# local appcast, and embeds the EdDSA public key so the app actually
+# verifies the signature on a downloaded .dmg. Only active when
+# MARKZZY_SPARKLE_TEST=1 is exported. Production release.yml writes its
+# own equivalent block; this is for the Phase C local test in
+# docs/RELEASING.md.
+SPARKLE_AUTO_CHECKS="false"
+SPARKLE_TEST_KEYS=""
+if [ "${MARKZZY_SPARKLE_TEST:-0}" = "1" ]; then
+    echo "==> MARKZZY_SPARKLE_TEST=1 — enabling Sparkle in this build"
+    SPARKLE_AUTO_CHECKS="true"
+    if [ -n "${MARKZZY_SPARKLE_PUBLIC_KEY:-}" ]; then
+        SPARKLE_TEST_KEYS="${SPARKLE_TEST_KEYS}
+    <key>SUPublicEDKey</key><string>${MARKZZY_SPARKLE_PUBLIC_KEY}</string>"
+    else
+        echo "    ⚠️  MARKZZY_SPARKLE_PUBLIC_KEY not set — Sparkle will reject every update."
+    fi
+    if [ -n "${MARKZZY_APPCAST_URL:-}" ]; then
+        SPARKLE_TEST_KEYS="${SPARKLE_TEST_KEYS}
+    <key>SUFeedURL</key><string>${MARKZZY_APPCAST_URL}</string>"
+    else
+        echo "    ⚠️  MARKZZY_APPCAST_URL not set — Sparkle will hit production feed."
+    fi
 fi
 
 cat > "$BUNDLE/Contents/Info.plist" <<PLIST
@@ -61,13 +97,14 @@ cat > "$BUNDLE/Contents/Info.plist" <<PLIST
     <key>NSMicrophoneUsageDescription</key><string>Markzzy graba tu voz junto con la pantalla.</string>
     <key>NSScreenCaptureUsageDescription</key><string>Markzzy necesita grabar tu pantalla.</string>
     <key>NSCameraUseContinuityCameraDeviceType</key><true/>
-    <!-- Disable Sparkle auto-updates on local dev builds. Local builds
-         intentionally don't ship SUPublicEDKey, so Sparkle would refuse
-         to install any update anyway — this flag just prevents the
-         silent feed fetch that happens on launch. Release builds
-         (via .github/workflows/release.yml) override these. -->
-    <key>SUEnableAutomaticChecks</key><false/>
-    <key>SUEnableInstallerLauncherService</key><false/>
+    <!-- Sparkle auto-updates: off by default for local dev builds. Local
+         builds intentionally don't ship SUPublicEDKey, so Sparkle would
+         refuse to install any update anyway. Set MARKZZY_SPARKLE_TEST=1
+         (with MARKZZY_APPCAST_URL + MARKZZY_SPARKLE_PUBLIC_KEY) to flip
+         this on for the Phase C local update test. Release builds
+         (.github/workflows/release.yml) override these. -->
+    <key>SUEnableAutomaticChecks</key><${SPARKLE_AUTO_CHECKS}/>
+    <key>SUEnableInstallerLauncherService</key><false/>${SPARKLE_TEST_KEYS}
     <key>CFBundleURLTypes</key>
     <array>
         <dict>

@@ -90,6 +90,88 @@ Watch the `Release` workflow in the Actions tab. On success:
 - Installed copies of Markzzy hit the appcast on their next periodic check
   and prompt the user to update.
 
+## Local update test (no Apple cert needed)
+
+Validates the entire Sparkle download → verify → install → relaunch loop
+against a local appcast + locally-signed DMG. Useful before paying for
+the Apple Developer Program (which is only required for notarization /
+distribution to other users without Gatekeeper warnings).
+
+### One-time setup
+
+```bash
+# Sparkle key pair — keep the .pem in a password manager too
+brew install --cask sparkle
+generate_keys
+generate_keys -x ~/.markzzy-sparkle.pem
+PUBKEY="<paste the 'Public key:' line from the generate_keys output>"
+```
+
+### Each test cycle
+
+1. **Cut "v0.1.0" — the installed baseline.** Bump version in `Info.plist`
+   (or keep current), then build with Sparkle test mode on:
+   ```bash
+   MARKZZY_API_BASE=http://localhost:3000 \
+   MARKZZY_APPCAST_URL=http://localhost:8000/appcast.xml \
+   MARKZZY_SPARKLE_PUBLIC_KEY="$PUBKEY" \
+   MARKZZY_SPARKLE_TEST=1 \
+       ./scripts/install-to-desktop.sh
+   mv ~/Desktop/Markzzy.app /Applications/Markzzy.app
+   ```
+
+2. **Cut "v0.1.1" — the version Sparkle should offer.** Bump version,
+   make a visible change (e.g. tweak the Header copy), then:
+   ```bash
+   MARKZZY_API_BASE=http://localhost:3000 \
+   MARKZZY_APPCAST_URL=http://localhost:8000/appcast.xml \
+   MARKZZY_SPARKLE_PUBLIC_KEY="$PUBKEY" \
+   MARKZZY_SPARKLE_TEST=1 \
+       ./scripts/build-dmg-local.sh
+   SIG=$(./scripts/sign-dmg-local.sh ~/Desktop/Markzzy-dev.dmg)
+   ```
+
+3. **Stage the local appcast + DMG.**
+   ```bash
+   mkdir -p ~/markzzy-local-releases
+   cp ~/Desktop/Markzzy-dev.dmg ~/markzzy-local-releases/Markzzy-0.1.1.dmg
+   LEN=$(stat -f%z ~/markzzy-local-releases/Markzzy-0.1.1.dmg)
+   cat > ~/markzzy-local-releases/appcast.xml <<XML
+   <?xml version="1.0"?>
+   <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+     <channel>
+       <item>
+         <title>0.1.1</title>
+         <sparkle:version>0.1.1</sparkle:version>
+         <sparkle:shortVersionString>0.1.1</sparkle:shortVersionString>
+         <description><![CDATA[<p>Local update test build.</p>]]></description>
+         <enclosure
+           url="http://localhost:8000/Markzzy-0.1.1.dmg"
+           sparkle:edSignature="$SIG"
+           length="$LEN"
+           type="application/octet-stream" />
+       </item>
+     </channel>
+   </rss>
+XML
+   ```
+
+4. **Serve the appcast.**
+   ```bash
+   cd ~/markzzy-local-releases && python3 -m http.server 8000
+   ```
+   Leave that terminal open; it serves both `appcast.xml` and the DMG.
+
+5. **Trigger the update.** Open `/Applications/Markzzy.app` (still v0.1.0),
+   go to **Settings → Check for Updates**. Sparkle should hit
+   `localhost:8000/appcast.xml`, surface "Markzzy 0.1.1 is now available",
+   download the DMG, verify the EdDSA signature against the embedded
+   `SUPublicEDKey`, replace the .app, and relaunch as 0.1.1.
+
+If any step fails, see the **Troubleshooting** section below — the most
+common pitfalls (signature mismatch, version not strictly greater, feed
+URL mismatch) are listed there.
+
 ## Troubleshooting
 
 - **`sign_update not found`** — the Sparkle SPM package ships `sign_update` as

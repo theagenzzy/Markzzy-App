@@ -100,9 +100,24 @@ jobs:
           VERSION: ${{ steps.ver.outputs.VERSION }}
         run: |
           set -euo pipefail
+          # `create-dmg` is the standard wrapper for the drag-to-Applications
+          # mount window everyone uses (OBS, Slack, Notion, Figma…). It
+          # handles the staging dir, /Applications symlink, background image,
+          # icon positioning and DS_Store dance that hdiutil doesn't.
+          brew install create-dmg
           DMG="dist/${APP_NAME}-${VERSION}.dmg"
-          hdiutil create -volname "${APP_NAME}" -srcfolder "dist/${APP_NAME}.app" \
-            -ov -format UDZO "$DMG"
+          create-dmg \
+            --volname "${APP_NAME} ${VERSION}" \
+            --background "Resources/dmg-background.png" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 128 \
+            --icon "${APP_NAME}.app" 150 200 \
+            --hide-extension "${APP_NAME}.app" \
+            --app-drop-link 450 200 \
+            --no-internet-enable \
+            "$DMG" \
+            "dist/${APP_NAME}.app"
           echo "DMG_PATH=$DMG" >> "$GITHUB_ENV"
 
       - name: Notarize DMG
@@ -118,6 +133,13 @@ jobs:
             --team-id "$APPLE_TEAM_ID" \
             --wait
           xcrun stapler staple "$DMG_PATH"
+          # Now that the notarization ticket is stapled, fork a stable-named
+          # copy for the landing's "Download for Mac" button. GitHub's
+          # /releases/latest/download/<name> URL only works with a constant
+          # asset name across releases.
+          STABLE_DMG="dist/${APP_NAME}.dmg"
+          cp "$DMG_PATH" "$STABLE_DMG"
+          echo "STABLE_DMG_PATH=$STABLE_DMG" >> "$GITHUB_ENV"
 
       - name: Sign DMG for Sparkle
         env:
@@ -136,7 +158,9 @@ jobs:
         id: gh_release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.DMG_PATH }}
+          files: |
+            ${{ env.DMG_PATH }}
+            ${{ env.STABLE_DMG_PATH }}
           tag_name: ${{ github.ref_name }}
           draft: false
           prerelease: false

@@ -18,9 +18,18 @@ struct TrialBanner: View {
     private var isDismissedToday: Bool { dismissedDay == todayKey }
 
     var body: some View {
-        if let days = license.trialDaysRemaining, !isDismissedToday {
+        // Two display states:
+        //   - Server has answered (trialDaysRemaining != nil): show the count
+        //     with urgency tint that drifts green → orange → red.
+        //   - Server hasn't answered yet (heartbeat in flight or unreachable):
+        //     show a degraded "Trial active" banner without a number. Beats
+        //     hiding the banner entirely, which used to leave the user with
+        //     no upgrade affordance until the network landed.
+        if !isDismissedToday, license.isTrialing {
+            let days = license.trialDaysRemaining
+            let bg = tint(forDays: days)
             HStack(spacing: 10) {
-                Image(systemName: days <= 1 ? "exclamationmark.circle.fill" : "bolt.fill")
+                Image(systemName: (days ?? 99) <= 1 ? "exclamationmark.circle.fill" : "bolt.fill")
                     .font(.system(size: 13, weight: .semibold))
                 Text(label(forDays: days))
                     .font(.system(size: 12, weight: .medium))
@@ -29,7 +38,7 @@ struct TrialBanner: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                     .tint(.white.opacity(0.95))
-                    .foregroundStyle(tint(forDays: days))
+                    .foregroundStyle(bg)
                 Button {
                     dismissedDay = todayKey
                 } label: {
@@ -44,21 +53,23 @@ struct TrialBanner: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity)
-            .background(tint(forDays: days))
+            .background(bg)
             .foregroundStyle(.white)
         }
     }
 
-    private func label(forDays days: Int) -> String {
-        switch days {
+    private func label(forDays days: Int?) -> String {
+        guard let d = days else { return "Trial active — upgrade any time" }
+        switch d {
         case 0: return "Trial ends today — upgrade to keep recording"
         case 1: return "Trial ends tomorrow — upgrade now"
-        default: return "\(days) days left in trial"
+        default: return "\(d) days left in trial"
         }
     }
 
-    private func tint(forDays days: Int) -> Color {
-        switch days {
+    private func tint(forDays days: Int?) -> Color {
+        guard let d = days else { return .green }   // unknown = optimistic green
+        switch d {
         case 0: return .red
         case 1...3: return .orange
         default: return .green

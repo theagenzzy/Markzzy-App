@@ -14,7 +14,21 @@ import Sparkle
 /// MarkzzyApp's `.task`, after the window is on screen.
 @MainActor
 final class UpdateManager: NSObject, ObservableObject {
-    static let feedURL = "https://markzzy.tech/api/releases/appcast.xml"
+    /// Resolution order: env > UserDefaults > production. Mirrors the same
+    /// pattern as `LicenseManager.apiBase` so a single dev machine can
+    /// point both the API and the Sparkle feed at localhost without
+    /// recompiling. Set `MARKZZY_APPCAST_URL` (env var or `defaults write
+    /// dev.markzzy.app MARKZZY_APPCAST_URL …`) when running the local
+    /// update test from `docs/RELEASING.md`.
+    static let feedURL: String = {
+        if let env = ProcessInfo.processInfo.environment["MARKZZY_APPCAST_URL"], !env.isEmpty {
+            return env
+        }
+        if let pref = UserDefaults.standard.string(forKey: "MARKZZY_APPCAST_URL"), !pref.isEmpty {
+            return pref
+        }
+        return "https://markzzy.tech/api/releases/appcast.xml"
+    }()
 
     @Published private(set) var canCheckForUpdates: Bool = false
 
