@@ -13,9 +13,26 @@ final class LivePreview: NSObject, SCStreamOutput, @unchecked Sendable {
 
     private var stream: SCStream?
     private let queue = DispatchQueue(label: "markzzy.preview.sc")
+    /// Off-thread queue for the per-frame CGImage build. Without this,
+    /// every push() during recording does a full canvas render on the
+    /// caller's thread (the recording pipeline's compose queue), adding
+    /// GPU work per frame on top of the encoder.
+    private let convertQueue = DispatchQueue(label: "markzzy.preview.convert",
+                                             qos: .userInitiated)
     private let ci = CIContext()
     private var lastEmit: CFTimeInterval = 0
-    private let minInterval: CFTimeInterval = 1.0 / 20.0
+    /// Soft 20 fps cap when capturing directly (idle preview).
+    private let captureMinInterval: CFTimeInterval = 1.0 / 20.0
+    /// Tighter 10 fps cap while recording. The MP4 keeps its 24 fps;
+    /// this cap is only the small in-app preview window. Halves the
+    /// CGImage churn / SwiftUI re-renders during recording — the user
+    /// still sees a live updating preview, just at 10 fps instead of
+    /// 20-30. Imperceptibly less smooth, much lighter on the system.
+    private let recordingMinInterval: CFTimeInterval = 1.0 / 10.0
+    /// Single-flight guard. Drops the new frame if a previous CGImage
+    /// build is still in progress on convertQueue — keeps preview
+    /// latency at ~one frame instead of growing under load.
+    private var converting = false
     private let lock = NSLock()
 
     func start(for source: ScreenSource) async {
@@ -67,18 +84,40 @@ final class LivePreview: NSObject, SCStreamOutput, @unchecked Sendable {
         }
     }
 
-    /// Forward an already-composited buffer (from the recording pipeline) into the preview.
+    /// Forward a composed buffer from the recording pipeline. Drops if
+    /// a previous build is in flight or we're under the 10 fps cap.
+    /// CGImage build is dispatched off-thread so the caller (compose
+    /// queue) returns immediately.
     func push(_ pixelBuffer: CVPixelBuffer) {
-        convert(pixelBuffer)
+        lock.lock()
+        let now = CACurrentMediaTime()
+        if converting || now - lastEmit < recordingMinInterval {
+            lock.unlock(); return
+        }
+        converting = true
+        lastEmit = now
+        lock.unlock()
+        // Anchor buffer lifetime via CIImage on caller's thread (CIImage
+        // retains the CVPixelBuffer) before the dispatch hop.
+        let image = CIImage(cvPixelBuffer: pixelBuffer)
+        convertQueue.async { [weak self] in
+            guard let self else { return }
+            defer {
+                self.lock.lock()
+                self.converting = false
+                self.lock.unlock()
+            }
+            guard let cg = self.ci.createCGImage(image, from: image.extent) else { return }
+            self.onFrame?(cg)
+        }
     }
 
     private func convert(_ pb: CVPixelBuffer) {
         lock.lock()
         let now = CACurrentMediaTime()
-        if now - lastEmit < minInterval { lock.unlock(); return }
+        if now - lastEmit < captureMinInterval { lock.unlock(); return }
         lastEmit = now
         lock.unlock()
-
         let image = CIImage(cvPixelBuffer: pb)
         guard let cg = ci.createCGImage(image, from: image.extent) else { return }
         onFrame?(cg)

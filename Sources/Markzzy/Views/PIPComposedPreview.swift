@@ -35,17 +35,7 @@ struct PIPComposedPreview: View {
                         .frame(width: canvas.width, height: canvas.height)
                         .offset(x: origin.x, y: origin.y)
                         .contentShape(Rectangle())
-                        .gesture(
-                            DragGesture(minimumDistance: 0, coordinateSpace: .named("canvas"))
-                                .onChanged { value in
-                                    let nx = (value.location.x - origin.x) / canvas.width
-                                    let ny = (value.location.y - origin.y) / canvas.height
-                                    model.pipPosition = CGPoint(
-                                        x: snap(clamp(nx), anchors: [0.12, 0.5, 0.88], threshold: 0.04),
-                                        y: snap(clamp(ny), anchors: [0.12, 0.5, 0.88], threshold: 0.04)
-                                    )
-                                }
-                        )
+                        .gesture(pipDragGesture(origin: origin, canvas: canvas))
                         .allowsHitTesting(model.selectedCamera != nil)
                 }
 
@@ -64,8 +54,25 @@ struct PIPComposedPreview: View {
                     )
 
                 // Camera slot (always in the view tree — keeps the NSView alive).
+                // Tagged with the preview-session generation: when the
+                // camera gets handed back from the recording pipeline,
+                // SwiftUI rebuilds the NSView so AVCaptureVideoPreviewLayer
+                // re-engages with the freshly restored session. Without
+                // this, the camera slot stays black after the first stop.
                 cameraView(frame: c)
+                    .id(model.previewSessionGeneration)
                     .opacity((!model.composedFrameActive && model.layout.usesCamera) ? 1 : 0)
+                    // Drag DESDE la cámara: el NSView de la cámara
+                    // capturaba los clicks y bloqueaba el área de
+                    // drag de abajo → el usuario presionaba la
+                    // cámara y "no la podía mover". Mismo gesto
+                    // aplicado encima del NSView resuelve la UX
+                    // intuitiva (tocas el objeto, lo arrastras).
+                    .gesture(
+                        pipDragGesture(origin: origin, canvas: canvas),
+                        including: (model.layout == .pipOverlay && model.selectedCamera != nil)
+                            ? .all : .none
+                    )
 
                 // Full-canvas disconnect banner. Drawn last so it sits
                 // above the small PIP slot AND above the screen
@@ -86,6 +93,20 @@ struct PIPComposedPreview: View {
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
             .coordinateSpace(name: "canvas")
         }
+    }
+
+    /// Gesto de drag de la cámara PIP. Mismo cálculo se reutiliza
+    /// desde el área transparente del canvas Y desde la propia cámara
+    /// para que se pueda arrastrar desde cualquiera.
+    private func pipDragGesture(origin: CGPoint, canvas: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named("canvas"))
+            .onChanged { value in
+                let nx = (value.location.x - origin.x) / canvas.width
+                let ny = (value.location.y - origin.y) / canvas.height
+                // Drag libre — sin snap. Las esquinas siguen
+                // accesibles vía los botones cornerButton.
+                model.pipPosition = CGPoint(x: clamp(nx), y: clamp(ny))
+            }
     }
 
     private func clamp(_ v: CGFloat) -> CGFloat { min(max(v, 0.05), 0.95) }
@@ -129,13 +150,28 @@ struct PIPComposedPreview: View {
             scaledW = slot.width
             scaledH = scaledW / srcAspect
         }
+        // Anchor por eje: si el overflow real es horizontal mueve en
+        // X, si es vertical mueve en Y. Antes Y estaba hardcoded a
+        // center → al recortar arriba/abajo (YouTube 16:9 en
+        // pantalla 16:10) el preview no respondía al anchor.
         let offsetX: CGFloat
-        switch model.screenAnchor {
-        case .left:   offsetX = 0
-        case .center: offsetX = (slot.width - scaledW) / 2
-        case .right:  offsetX = slot.width - scaledW
+        let offsetY: CGFloat
+        switch model.anchorAxis {
+        case .horizontal:
+            switch model.screenAnchor {
+            case .left:   offsetX = 0
+            case .center: offsetX = (slot.width - scaledW) / 2
+            case .right:  offsetX = slot.width - scaledW
+            }
+            offsetY = (slot.height - scaledH) / 2
+        case .vertical:
+            offsetX = (slot.width - scaledW) / 2
+            switch model.screenAnchor {
+            case .left:   offsetY = 0                        // top
+            case .center: offsetY = (slot.height - scaledH) / 2
+            case .right:  offsetY = slot.height - scaledH    // bottom
+            }
         }
-        let offsetY = (slot.height - scaledH) / 2
         return Image(decorative: img, scale: 1)
             .resizable()
             .frame(width: scaledW, height: scaledH)
@@ -190,12 +226,24 @@ struct PIPComposedPreview: View {
     private var cameraMask: some View {
         if model.layout == .pipOverlay {
             if model.pipShape.usesSoftMask {
-                RadialGradient(
-                    colors: [.white, .white, .clear],
-                    center: .center,
-                    startRadius: 0,
-                    endRadius: 1000
-                )
+                // softEdge: gradiente radial RELATIVO al tamaño real
+                // del slot. El antiguo endRadius=1000 era tan grande
+                // que dentro del PIP la máscara era 100% opaca → el
+                // borde difuminado no se veía nunca. GeometryReader
+                // anclar el radio al lado del slot lo arregla.
+                GeometryReader { geo in
+                    let r = min(geo.size.width, geo.size.height) / 2
+                    RadialGradient(
+                        stops: [
+                            .init(color: .white, location: 0.0),
+                            .init(color: .white, location: 0.78),
+                            .init(color: .clear, location: 1.0),
+                        ],
+                        center: .center,
+                        startRadius: 0,
+                        endRadius: r
+                    )
+                }
             } else {
                 model.pipShape.anyShape().fill(Color.black)
             }
@@ -425,93 +473,123 @@ private struct IPhoneDisconnectedBanner: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        ZStack {
-            // Semi-transparent backdrop — frozen-canvas signal but
-            // screen preview underneath stays faintly visible.
-            Color.black.opacity(0.78)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-
-            ScrollView {
-                content
-                    .padding(20)
-                    .frame(maxWidth: .infinity)
+        GeometryReader { geo in
+            // Reel (9:16) and Square (1:1) canvases are much narrower
+            // than YouTube — the banner needs aggressive size scaling
+            // and shorter copy to keep title + hint + button readable
+            // instead of breaking mid-word and truncating to "Try to r…".
+            let narrow = geo.size.width < 360
+            ZStack {
+                Color.black.opacity(0.78)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                ScrollView {
+                    content(narrow: narrow)
+                        .padding(.horizontal, narrow ? 10 : 20)
+                        .padding(.vertical, narrow ? 14 : 20)
+                        .frame(maxWidth: .infinity)
+                }
             }
         }
     }
 
     @ViewBuilder
-    private var content: some View {
+    private func content(narrow: Bool) -> some View {
+        let titleSize: CGFloat = narrow ? 12 : 14
+        let hintSize: CGFloat = narrow ? 9.5 : 11
+        let iconSize: CGFloat = narrow ? 22 : 30
+        let buttonSize: CGFloat = narrow ? 10.5 : 12
+
         if let status = model.reconnectAttemptStatus {
-            // State 2 — in progress.
             VStack(spacing: 10) {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(.white)
+                ProgressView().controlSize(.small).tint(.white)
                 Text(String(format: model.t(.iPhoneReconnectingAttempt), status))
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: titleSize, weight: .semibold))
                     .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .minimumScaleFactor(0.7)
             }
         } else if model.reconnectExhausted {
-            // State 3 — exhausted, escalate to manual instructions.
-            VStack(spacing: 10) {
+            VStack(spacing: narrow ? 8 : 10) {
                 Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 26))
+                    .font(.system(size: narrow ? 20 : 26))
                     .foregroundStyle(.orange)
                 Text(model.t(.iPhoneReconnectExhaustedTitle))
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: titleSize, weight: .semibold))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
+                    .minimumScaleFactor(0.7)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(model.t(.iPhoneReconnectExhaustedHint))
-                    .font(.system(size: 11))
+                    .font(.system(size: hintSize))
                     .foregroundStyle(.white.opacity(0.8))
-                    .multilineTextAlignment(.leading)
-                    .padding(.horizontal, 16)
-                Button {
+                    .multilineTextAlignment(narrow ? .center : .leading)
+                    .minimumScaleFactor(0.85)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, narrow ? 4 : 16)
+                reconnectButton(label: .iPhoneReconnectTryAgain,
+                                fontSize: buttonSize, narrow: narrow) {
                     model.reconnectExhausted = false
                     Task { await model.forceIPhoneReconnect() }
-                } label: {
-                    Label(model.t(.iPhoneReconnectTryAgain), systemImage: "arrow.clockwise")
-                        .font(.system(size: 12, weight: .medium))
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
-                .tint(.blue)
                 .padding(.top, 4)
-                Text(model.t(.iPhoneReconnectStillWatching))
-                    .font(.system(size: 10, weight: .regular))
-                    .foregroundStyle(.white.opacity(0.55))
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 6)
+                if !narrow {
+                    Text(model.t(.iPhoneReconnectStillWatching))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 6)
+                }
             }
         } else {
-            // State 1 — idle, fresh disconnect.
-            VStack(spacing: 10) {
+            VStack(spacing: narrow ? 8 : 10) {
                 Image(systemName: "iphone.gen3")
-                    .font(.system(size: 30))
+                    .font(.system(size: iconSize))
                     .foregroundStyle(.white.opacity(0.9))
                     .symbolEffect(.pulse, options: .repeating)
                 Text(model.t(.iPhoneReconnectingTitle))
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: titleSize, weight: .semibold))
                     .foregroundStyle(.white)
-                Text(model.t(.iPhoneReconnectingHint))
-                    .font(.system(size: 11))
+                    .multilineTextAlignment(.center)
+                    .minimumScaleFactor(0.7)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(model.t(narrow ? .iPhoneReconnectingHintShort
+                                   : .iPhoneReconnectingHint))
+                    .font(.system(size: hintSize))
                     .foregroundStyle(.white.opacity(0.7))
                     .multilineTextAlignment(.center)
-                    .lineLimit(4)
-                    .padding(.horizontal, 24)
-                Button {
+                    .minimumScaleFactor(0.85)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, narrow ? 4 : 24)
+                reconnectButton(label: narrow ? .iPhoneReconnectButtonShort
+                                              : .iPhoneReconnectButton,
+                                fontSize: buttonSize, narrow: narrow) {
                     Task { await model.forceIPhoneReconnect() }
-                } label: {
-                    Label(model.t(.iPhoneReconnectButton), systemImage: "arrow.clockwise")
-                        .font(.system(size: 12, weight: .medium))
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
-                .tint(.blue)
                 .padding(.top, 4)
             }
         }
+    }
+
+    /// Compact button. On narrow canvases drops the SF Symbol prefix and
+    /// allows the text to scale — `Label` truncates to "Try to r…" otherwise.
+    @ViewBuilder
+    private func reconnectButton(label: LKey, fontSize: CGFloat,
+                                 narrow: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                if !narrow { Image(systemName: "arrow.clockwise") }
+                Text(model.t(label))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            .font(.system(size: fontSize, weight: .medium))
+            .padding(.horizontal, narrow ? 4 : 0)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(narrow ? .small : .regular)
+        .tint(.blue)
     }
 }
 

@@ -154,6 +154,20 @@ public final class AppModel: ObservableObject {
     @Published public var quality: RecordingQuality = AppModel.loadQuality() {
         didSet { UserDefaults.standard.set(quality.rawValue, forKey: Keys.quality) }
     }
+
+    /// Performance Mode: trades visual quality for system responsiveness
+    /// while recording. When enabled:
+    ///   - Live preview freezes during recording (last frame + REC badge)
+    ///   - Camera locked at 10 fps instead of 15
+    ///   - Canvas resolution forced to HD (720p tier) regardless of
+    ///     the user's chosen output resolution
+    /// For users on entry-level Macs (M1 Air) where running screen +
+    /// camera + audio capture + Metal compose simultaneously saturates
+    /// the system. Off by default — most users get the better quality.
+    @Published public var performanceMode: Bool =
+        UserDefaults.standard.bool(forKey: Keys.performanceMode) {
+        didSet { UserDefaults.standard.set(performanceMode, forKey: Keys.performanceMode) }
+    }
     @Published public var outputFormat: OutputFormat = AppModel.loadFormat() {
         didSet {
             UserDefaults.standard.set(outputFormat.rawValue, forKey: Keys.format)
@@ -164,10 +178,32 @@ public final class AppModel: ObservableObject {
             } else if outputFormat != .youtube, layout == .pipOverlay {
                 layout = .splitScreenTop
             }
+            reattachPreviewCameraIfIdle()
         }
     }
     @Published public var layout: Layout = AppModel.loadLayout() {
-        didSet { UserDefaults.standard.set(layout.rawValue, forKey: Keys.layout) }
+        didSet {
+            UserDefaults.standard.set(layout.rawValue, forKey: Keys.layout)
+            reattachPreviewCameraIfIdle()
+        }
+    }
+
+    /// Re-bind the camera to the preview session and force the camera
+    /// NSView to rebuild whenever the format/layout changes while NOT
+    /// recording. Fixes the "camera disappears after YouTube → record →
+    /// back to Reel" bug: after a recording the device may still be
+    /// releasing from the pipeline's camSession, and a layout switch
+    /// otherwise never re-applies the input nor rebuilds the preview
+    /// layer — leaving the camera slot black.
+    private func reattachPreviewCameraIfIdle() {
+        switch state {
+        case .recording, .preparing, .paused, .finishing:
+            return  // pipeline owns the camera; don't touch it
+        default:
+            break
+        }
+        applyPreviewCamera(selectedCamera)
+        previewSessionGeneration &+= 1
     }
     @Published public var screenAnchor: ScreenAnchor = AppModel.loadScreenAnchor() {
         didSet { UserDefaults.standard.set(screenAnchor.rawValue, forKey: Keys.screenAnchor) }
@@ -208,6 +244,12 @@ public final class AppModel: ObservableObject {
 
     public let previewSession = AVCaptureSession()
     var previewInput: AVCaptureDeviceInput?
+    /// Bumped on each recording stop so SwiftUI rebuilds the camera
+    /// preview NSView. Without this, AVCaptureVideoPreviewLayer holds
+    /// onto its pre-recording state and never re-engages with the
+    /// (now-restored) preview session — camera slot stays black after
+    /// recording ends.
+    @Published public internal(set) var previewSessionGeneration: Int = 0
     private let livePreview = LivePreview()
     private let micMonitor = MicMonitor()
     private var timer: Timer?
@@ -308,6 +350,16 @@ public final class AppModel: ObservableObject {
 
     private func stopPreview() {
         if previewSession.isRunning { previewSession.stopRunning() }
+        // Fully release the camera device. Just calling stopRunning()
+        // leaves the input attached, and AVFoundation can keep the
+        // device "warm" — that means the recording pipeline's camSession
+        // can't fully claim the camera and gets only black frames.
+        if let input = previewInput {
+            previewSession.beginConfiguration()
+            previewSession.removeInput(input)
+            previewSession.commitConfiguration()
+            previewInput = nil
+        }
     }
 
     // MARK: - Recording flow
@@ -393,18 +445,27 @@ public final class AppModel: ObservableObject {
                 format: outputFormat,
                 layout: layout,
                 screenAnchor: screenAnchor,
-                resolution: outputResolution
+                // Performance Mode forces HD (720p tier) regardless of
+                // user selection — cuts canvas pixel count by ~half,
+                // proportional reduction in compose + encoder work.
+                resolution: performanceMode ? .hd720 : outputResolution,
+                performanceMode: performanceMode
             )
+            // Performance Mode: skip live preview push entirely (just
+            // mark first composed frame so UI flips to "REC" badge).
+            // Saves ~10 CGImage builds/s + main actor hops + SwiftUI
+            // re-renders during recording.
+            let perfMode = performanceMode
             pipe.onComposedFrame = { [weak self] buffer in
-                self?.livePreview.push(buffer)
+                if !perfMode {
+                    self?.livePreview.push(buffer)
+                }
                 Task { @MainActor in
                     guard let self, !self.composedFrameActive else { return }
                     self.composedFrameActive = true
                 }
             }
             try await pipe.start()
-            // Composed frames are now flowing — stop the standalone screen
-            // SCStream so the two sources don't race on the preview.
             await livePreview.stop()
             pipeline = pipe
             recordingStart = Date()
@@ -483,12 +544,19 @@ public final class AppModel: ObservableObject {
             let url = try await pipeline?.stop()
             pipeline = nil
             applyPreviewCamera(selectedCamera)
+            // Bump after the camera is handed back from the pipeline
+            // session to the preview session — SwiftUI rebuilds the
+            // camera NSView so AVCaptureVideoPreviewLayer re-engages
+            // with the (now-restored) preview session. Without this,
+            // the camera slot stays black after the recording ends.
+            previewSessionGeneration &+= 1
             if let s = selectedScreen { await livePreview.start(for: s) }
             applyMicMonitor()
             updateContinuityPolling()
             if let url { state = .done(url) } else { state = .idle }
         } catch {
             applyPreviewCamera(selectedCamera)
+            previewSessionGeneration &+= 1
             if let s = selectedScreen { await livePreview.start(for: s) }
             applyMicMonitor()
             updateContinuityPolling()
@@ -529,6 +597,28 @@ public final class AppModel: ObservableObject {
 
     public func t(_ key: LKey) -> String { L10n.t(key, in: language) }
 
+    /// Eje del recorte: si la pantalla es más ancha que el slot el
+    /// overflow es horizontal (anchor = left/center/right); si es más
+    /// alta, vertical (anchor = top/center/bottom). La UI usa esto
+    /// para mostrar iconos/etiquetas correctos en cada caso.
+    public var anchorAxis: AnchorAxis {
+        guard let screen = selectedScreen, layout.usesScreen else { return .horizontal }
+        let sw = CGFloat(screen.width)
+        let sh = CGFloat(screen.height)
+        let canvas = outputFormat.canvasSize(for: screen, resolution: outputResolution)
+        let slotAspect: CGFloat
+        switch layout {
+        case .pipOverlay, .screenOnly:
+            slotAspect = canvas.width / max(canvas.height, 1)
+        case .splitScreenTop, .splitCamTop:
+            slotAspect = canvas.width / max(canvas.height / 2, 1)
+        case .cameraOnly:
+            return .horizontal
+        }
+        let sourceAspect = sw / max(sh, 1)
+        return sourceAspect > slotAspect ? .horizontal : .vertical
+    }
+
     /// Effective screen capture dimensions after the format/layout/anchor crop.
     /// Used to tell the user what portion of their display is actually recorded.
     public var effectiveCaptureRect: CGRect? {
@@ -567,6 +657,7 @@ public final class AppModel: ObservableObject {
         static let outputDir         = "outputDirectoryPath"
         static let language          = "appLanguage"
         static let quality           = "recordingQuality"
+        static let performanceMode   = "performanceMode"
         static let countdownEnabled  = "countdownEnabled"
         static let rememberFaceCam   = "rememberFaceCam"
         static let faceCam           = "faceCamSettings"

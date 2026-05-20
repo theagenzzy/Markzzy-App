@@ -213,6 +213,28 @@ struct SettingsView: View {
                     .padding(.leading, 110)
                 }
                 Divider()
+                // Performance Mode toggle. Trades visual quality for
+                // system responsiveness during recording.
+                row(label: "Performance") {
+                    Toggle("", isOn: $model.performanceMode)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+                HStack(spacing: 8) {
+                    Image(systemName: model.performanceMode ? "bolt.fill" : "bolt.slash")
+                        .font(.caption)
+                        .foregroundStyle(model.performanceMode ? .yellow : .secondary)
+                        .frame(width: 16)
+                    Text(model.performanceMode
+                         ? "720p canvas + frozen preview during recording. Use this if your Mac feels laggy while recording (M1 Air, older models)."
+                         : "Full quality. Live preview updates during recording. May feel slightly heavy on entry-level Macs.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, 110)
+                Divider()
                 row(label: model.t(.countdown)) {
                     Picker("", selection: $model.countdownEnabled) {
                         Text(model.t(.countdownOff)).tag(false)

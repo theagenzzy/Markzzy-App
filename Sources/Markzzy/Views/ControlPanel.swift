@@ -436,10 +436,11 @@ struct ControlPanel: View {
 
     private func anchorButton(_ a: ScreenAnchor) -> some View {
         let active = model.screenAnchor == a
+        let axis = model.anchorAxis
         return Button { model.screenAnchor = a } label: {
             HStack(spacing: 4) {
-                Image(systemName: a.sfSymbol).font(.system(size: 11, weight: .semibold))
-                Text(a.localizedLabel(model.language)).font(.caption)
+                Image(systemName: a.sfSymbol(for: axis)).font(.system(size: 11, weight: .semibold))
+                Text(a.localizedLabel(for: axis, in: model.language)).font(.caption)
             }
             .frame(height: 24)
             .padding(.horizontal, 10)
@@ -591,7 +592,7 @@ struct ControlPanel: View {
                 cornerButton(.topRight,    icon: "arrow.up.right")
                 cornerButton(.bottomLeft,  icon: "arrow.down.left")
                 cornerButton(.bottomRight, icon: "arrow.down.right")
-                customIndicator
+                customButton
             }
             Spacer()
             Text(model.t(.orDragAbove))
@@ -618,17 +619,31 @@ struct ControlPanel: View {
         )
     }
 
-    private var customIndicator: some View {
+    /// Custom position. Pulsando: centra la cámara (entra en modo
+    /// libre, ya no coincide con una esquina) y deja al usuario
+    /// arrastrar la cámara en el preview para reposicionarla.
+    private var customButton: some View {
         let active = model.isCustomPosition
-        return Image(systemName: "scope")
-            .font(.system(size: 11, weight: .semibold))
-            .frame(width: 24, height: 22)
-            .foregroundStyle(active ? .white : .secondary)
-            .background(
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(active ? Color.accentColor : Color.secondary.opacity(0.12))
-            )
-            .help(model.t(.customPosition))
+        return Button {
+            // Si ya estás en modo libre, no toques la posición —
+            // respetamos donde dejaste la cámara. Si estás clavado
+            // a una esquina, te llevamos al centro como punto de
+            // inicio para indicar visualmente que ahora puedes
+            // arrastrar libremente.
+            if !active { model.pipPosition = CGPoint(x: 0.5, y: 0.5) }
+        } label: {
+            Image(systemName: "scope")
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 24, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(active ? .white : .primary)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(active ? Color.accentColor : Color.secondary.opacity(0.12))
+        )
+        .help(model.t(.customPosition))
     }
 
     private var borderStyleRow: some View {

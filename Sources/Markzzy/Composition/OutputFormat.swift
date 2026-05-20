@@ -54,11 +54,15 @@ public enum OutputFormat: String, CaseIterable, Identifiable, Codable {
                            resolution: OutputResolution = .fullHd) -> CGSize {
         switch self {
         case .youtube:
-            // Preserve the display's aspect, scale so the shorter axis matches
-            // the resolution tier. Round to even to satisfy H.264 encoder.
-            let aspect = CGFloat(screen.width) / CGFloat(max(screen.height, 1))
+            // Standard 16:9 canvas at the EXACT dimensions the platform
+            // expects (1280×720 / 1920×1080 / 2560×1440 / 3840×2160).
+            // Using the display's raw aspect produced odd sizes like
+            // 1728×1080 — not a real "1080p", and platforms re-encode
+            // it worse. The Metal compositor anchors+fills the screen
+            // into this frame (OBS "Fill" behaviour), so non-16:9
+            // displays still fill it edge-to-edge and sharp.
             let h = CGFloat(resolution.shortSide)
-            let w = h * aspect
+            let w = h * 16 / 9
             return CGSize(width: roundEven(w), height: roundEven(h))
         case .reel916:
             let w = CGFloat(resolution.shortSide)
@@ -152,4 +156,39 @@ public enum ScreenAnchor: String, CaseIterable, Identifiable, Codable {
         case .right:  L10n.t(.anchorRight, in: lang)
         }
     }
+
+    /// Axis-aware presentation. The same `left/center/right` value is
+    /// reinterpreted as `top/center/bottom` when the crop overflow is
+    /// vertical (handled identically by the Metal shader: 0/1/2 maps
+    /// to left|top / center / right|bottom depending on rama).
+    public func sfSymbol(for axis: AnchorAxis) -> String {
+        switch axis {
+        case .horizontal: return sfSymbol
+        case .vertical:
+            switch self {
+            case .center: return "rectangle.center.inset.filled"
+            case .left:   return "rectangle.tophalf.inset.filled"     // = top
+            case .right:  return "rectangle.bottomhalf.inset.filled"  // = bottom
+            }
+        }
+    }
+
+    public func localizedLabel(for axis: AnchorAxis, in lang: AppLanguage) -> String {
+        switch axis {
+        case .horizontal: return localizedLabel(lang)
+        case .vertical:
+            switch self {
+            case .center: return L10n.t(.anchorCenter, in: lang)
+            case .left:   return L10n.t(.anchorTop, in: lang)     // = top
+            case .right:  return L10n.t(.anchorBottom, in: lang)  // = bottom
+            }
+        }
+    }
+}
+
+/// Axis along which the screen crop overflows (set by the canvas vs
+/// source aspect ratio). Drives anchor UI: horizontal overflow → choose
+/// left/center/right; vertical overflow → top/center/bottom.
+public enum AnchorAxis {
+    case horizontal, vertical
 }

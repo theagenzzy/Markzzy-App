@@ -76,12 +76,44 @@ public final class Recorder {
 
         let w = try AVAssetWriter(outputURL: config.output, fileType: .mp4)
 
+        // Bitrate = professional "master" level, derived from
+        // resolution + fps, NOT a flat tier. A screen recording is
+        // high-detail (text, scrolling) and gets re-compressed again by
+        // YouTube/TikTok — the local file must be generously
+        // over-provisioned or it looks soft/blocky vs a native upload.
+        // The old flat 8 Mbps (medium @1080p) was the root of "doesn't
+        // look like the quality it says".
+        //
+        // Reference: 24 Mbps for 1080p30 (medium). Scales linearly with
+        // pixel area and fps; the low/medium/high tier becomes a
+        // multiplier (≈0.6 / 1.0 / 1.6) inferred from the tier's legacy
+        // bitrate. Targets: 720p≈11 · 1080p≈24 · 1440p≈43 · 4K≈80 Mbps.
+        let pixels = Double(config.width * config.height)
+        let refPixels = Double(1920 * 1080)
+        let areaFactor = pixels / refPixels
+        let fpsFactor = Double(max(config.fps, 1)) / 30.0
+        let tierFactor: Double = config.bitrate <= 5_000_000 ? 0.6
+                               : config.bitrate <= 11_000_000 ? 1.0
+                               : 1.6
+        let base1080p30 = 24_000_000.0
+        let target = base1080p30 * areaFactor * fpsFactor * tierFactor
+        let scaledBitrate = min(max(Int(target), 6_000_000), 80_000_000)
+
+        // Tag the file Rec.709 so the sRGB pixels SCStream gives us are
+        // interpreted correctly by every player (otherwise wide-gamut
+        // screens record washed-out / desaturated).
+        let colorProperties: [String: Any] = [
+            AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
+            AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
+            AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
+        ]
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
             AVVideoWidthKey: config.width,
             AVVideoHeightKey: config.height,
+            AVVideoColorPropertiesKey: colorProperties,
             AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: config.bitrate,
+                AVVideoAverageBitRateKey: scaledBitrate,
                 AVVideoMaxKeyFrameIntervalKey: config.fps * 2
             ]
         ]

@@ -9,8 +9,11 @@ struct MarkzzyApp: App {
     @State private var lastHandledToken: String?
 
     var body: some Scene {
-        Window("Markzzy", id: "main") {
+        Window(SelfTestRunner.isRequested() ? "Markzzy Self-Test" : "Markzzy", id: "main") {
             Group {
+                if SelfTestRunner.isRequested() {
+                    SelfTestRootView()
+                } else {
                 switch license.status {
                 case .unknown:
                     ProgressView().frame(width: 440, height: 380)
@@ -23,6 +26,7 @@ struct MarkzzyApp: App {
                         .environmentObject(license)
                         .environmentObject(updates)
                         .task { await model.bootstrap() }
+                }
                 }
             }
             // After-first-frame work: kick the license heartbeat (network)
@@ -67,6 +71,37 @@ struct MarkzzyApp: App {
                 Button("Check for Updates…") { updates.checkForUpdates() }
                     .disabled(!updates.canCheckForUpdates)
             }
+        }
+    }
+}
+
+/// Bare view for `--self-test` mode: kicks the recording self-test
+/// from `.task` and exits the process with PASS/FAIL.
+private struct SelfTestRootView: View {
+    @State private var status: String = "Self-test starting…"
+    var body: some View {
+        VStack(spacing: 8) {
+            Text("Markzzy Self-Test").font(.headline)
+            Text(status).font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            ProgressView().controlSize(.small)
+        }
+        .frame(width: 420, height: 140)
+        .task {
+            status = "Recording 3 s…"
+            let result = await SelfTest.run()
+            SelfTestRunner.writeResultFile(result)
+            if result.passed {
+                status = "PASS · \(result.message)"
+                print("MARKZZY_SELFTEST: PASS: \(result.message)")
+            } else {
+                status = "FAIL · \(result.message)"
+                print("MARKZZY_SELFTEST: FAIL: \(result.message)")
+            }
+            fflush(stdout)
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            exit(result.passed ? 0 : 1)
         }
     }
 }

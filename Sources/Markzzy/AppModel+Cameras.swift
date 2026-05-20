@@ -392,5 +392,30 @@ extension AppModel {
         } else if previewInput == nil, previewSession.isRunning {
             previewSession.stopRunning()
         }
+
+        // Resilience: if we wanted a device but couldn't bind it (input
+        // creation/add failed — usually the device is still releasing
+        // from the recording pipeline's camSession right after a stop),
+        // retry once after a short delay. Without this the camera slot
+        // stays black until the user manually toggles something.
+        if let device, previewInput == nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                guard let self, self.previewInput == nil,
+                      self.selectedCamera?.uniqueID == device.uniqueID else { return }
+                self.previewSession.beginConfiguration()
+                if let input = try? AVCaptureDeviceInput(device: device),
+                   self.previewSession.canAddInput(input) {
+                    self.previewSession.addInput(input)
+                    self.previewInput = input
+                }
+                self.previewSession.commitConfiguration()
+                if self.previewInput != nil, !self.previewSession.isRunning {
+                    let session = self.previewSession
+                    DispatchQueue.global(qos: .userInitiated).async { session.startRunning() }
+                }
+                // Force the preview NSView to re-engage with the now-bound session.
+                self.previewSessionGeneration &+= 1
+            }
+        }
     }
 }

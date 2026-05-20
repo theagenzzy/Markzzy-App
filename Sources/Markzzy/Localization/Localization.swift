@@ -48,7 +48,7 @@ public enum LKey: String, CaseIterable {
     case layout
     case layoutPipOverlay, layoutSplitScreenTop, layoutSplitCamTop
     case layoutCameraOnly, layoutScreenOnly
-    case screenAnchor, anchorCenter, anchorLeft, anchorRight
+    case screenAnchor, anchorCenter, anchorLeft, anchorRight, anchorTop, anchorBottom
     case resolution
     case faceCamHiddenNote
 
@@ -121,8 +121,8 @@ public enum LKey: String, CaseIterable {
     case iPhoneWaitingTitle, iPhoneWaitingHint, iPhoneWaitingBridgeNote
     // Variant shown after the user tapped "Disconnect" on the iPhone
     // (or the iPhone otherwise dropped mid-session).
-    case iPhoneReconnectingTitle, iPhoneReconnectingHint
-    case iPhoneReconnectButton
+    case iPhoneReconnectingTitle, iPhoneReconnectingHint, iPhoneReconnectingHintShort
+    case iPhoneReconnectButton, iPhoneReconnectButtonShort
     // Progress + escalation
     case iPhoneReconnectingAttempt          // "Trying %@…"
     case iPhoneReconnectExhaustedTitle      // "iOS still blocking — waiting for cool-down"
@@ -250,6 +250,7 @@ public enum L10n {
             .layoutScreenOnly: "Screen only",
             .screenAnchor: "Crop",
             .anchorCenter: "Center", .anchorLeft: "Left", .anchorRight: "Right",
+            .anchorTop: "Top", .anchorBottom: "Bottom",
             .resolution: "Resolution",
             .faceCamHiddenNote: "Face-cam controls apply only to the YouTube preset.",
             .settings: "Settings", .general: "General", .language: "Language",
@@ -362,7 +363,9 @@ public enum L10n {
             .iPhoneWaitingBridgeNote: "Detected: %@. If your iPhone is connected through it, it'll appear once it sends frames. To use Apple's native Continuity, quit the app above.",
             .iPhoneReconnectingTitle: "iPhone disconnected",
             .iPhoneReconnectingHint: "Apple imposes a cool-down of up to ~10 minutes after you tap Disconnect. Markzzy will reconnect automatically when iOS allows.\n\nTo speed it up:\n  • Connect your iPhone via USB cable (instant)\n  • Restart your iPhone (always works)",
+            .iPhoneReconnectingHintShort: "iOS cool-down up to ~10 min. USB or restart iPhone for instant reconnect.",
             .iPhoneReconnectButton: "Try to reconnect now",
+            .iPhoneReconnectButtonShort: "Reconnect",
             .iPhoneReconnectingAttempt: "Trying %@…",
             .iPhoneReconnectExhaustedTitle: "Waiting for iOS cool-down",
             .iPhoneReconnectExhaustedHint: "Typical wait: 1–10 minutes. Markzzy will keep checking automatically.\n\nWhile you wait:\n  ✅ Connect USB for instant reconnection\n  ✅ Restart the iPhone (always works)",
@@ -479,6 +482,7 @@ public enum L10n {
             .layoutScreenOnly: "Solo pantalla",
             .screenAnchor: "Recorte",
             .anchorCenter: "Centro", .anchorLeft: "Izquierda", .anchorRight: "Derecha",
+            .anchorTop: "Arriba", .anchorBottom: "Abajo",
             .resolution: "Resolución",
             .faceCamHiddenNote: "Los controles de cámara aplican solo al preset YouTube.",
             .settings: "Ajustes", .general: "General", .language: "Idioma",
@@ -591,7 +595,9 @@ public enum L10n {
             .iPhoneWaitingBridgeNote: "Detectado: %@. Si tu iPhone está conectado a través suyo, va a aparecer apenas envíe frames. Para usar Continuity nativa de Apple, cerrá la app de arriba.",
             .iPhoneReconnectingTitle: "iPhone desconectado",
             .iPhoneReconnectingHint: "Apple impone un bloqueo de hasta ~10 minutos después de tocar Disconnect. Markzzy reconectará automáticamente cuando iOS lo permita.\n\nPara acelerar:\n  • Conectá tu iPhone con cable USB (instantáneo)\n  • Reiniciá el iPhone (siempre funciona)",
+            .iPhoneReconnectingHintShort: "Bloqueo iOS hasta ~10 min. USB o reinicio del iPhone es instantáneo.",
             .iPhoneReconnectButton: "Intentar reconectar ahora",
+            .iPhoneReconnectButtonShort: "Reconectar",
             .iPhoneReconnectingAttempt: "Probando %@…",
             .iPhoneReconnectExhaustedTitle: "Esperando que iOS libere",
             .iPhoneReconnectExhaustedHint: "Tiempo típico: 1–10 minutos. Markzzy seguirá revisando automáticamente.\n\nMientras esperás:\n  ✅ Conectá USB para reconexión instantánea\n  ✅ Reiniciá el iPhone (siempre funciona)",

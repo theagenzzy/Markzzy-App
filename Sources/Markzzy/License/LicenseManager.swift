@@ -259,6 +259,12 @@ public final class LicenseManager: ObservableObject {
     /// and the subscription is still active. On 401 we sign out — that covers
     /// dashboard revocation, expired JWT, and canceled subscription.
     public func refreshFromServer() async {
+        // Dev builds keep the local fake trial — never let the server
+        // (which sees the real expired token) override it.
+        if Self.isDevBuild {
+            await MainActor.run { refreshStatus() }
+            return
+        }
         guard let token = Keychain.get(KC.token) else { return }
         var req = URLRequest(url: apiBase.appendingPathComponent("/api/license/refresh"))
         req.httpMethod = "POST"
@@ -333,7 +339,29 @@ public final class LicenseManager: ObservableObject {
 
     // MARK: - Public state transitions
 
+    /// Local dev builds (`dev.markzzy.app`) bypass trial expiry so the
+    /// developer can keep testing without re-issuing tokens. Production
+    /// (`tech.markzzy.Markzzy`) is unaffected — real users still hit the
+    /// server-authoritative expiry. Gated on bundle id so it can never
+    /// ship in a notarized build.
+    private static var isDevBuild: Bool {
+        (Bundle.main.bundleIdentifier ?? "").hasPrefix("dev.")
+    }
+
     public func refreshStatus() {
+        // Dev builds NEVER touch the keychain — that's what triggers the
+        // "Markzzy wants to access key dev.markzzy.app" password prompt
+        // on every rebuild (the keychain ACL is tied to the binary
+        // signature; even with a stable dev cert the prompt can recur).
+        // The dev fake-trial doesn't need a token, so skip the keychain
+        // read entirely and the prompt never appears.
+        if Self.isDevBuild {
+            status = .activated(plan: "trial",
+                                expiresAt: Date().addingTimeInterval(365 * 86_400))
+            activatedEmail = "dev@markzzy.local"
+            currentPeriodEnd = Date().addingTimeInterval(365 * 86_400)
+            return
+        }
         guard let token = Keychain.get(KC.token),
               let claims = Self.decodeClaims(from: token)
         else {
