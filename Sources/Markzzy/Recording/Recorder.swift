@@ -224,15 +224,28 @@ public final class Recorder {
             throw Err.notStarted
         }
         stopped = true
+        let wroteFrames = (startTime != nil) && frameCount > 0
         videoInput?.markAsFinished()
         audioInput?.markAsFinished()
         writerLock.unlock()
 
         await writer.finishWriting()
+        let status = writer.status
+        let werr = writer.error
         let url = config.output
         writerLock.lock()
         self.writer = nil
         writerLock.unlock()
+
+        // Surface a clear failure instead of returning a path to a broken/empty
+        // file (e.g. stopped during the camera warm-up before any frame was
+        // written). The caller always restores the camera regardless.
+        if status == .failed {
+            throw Err.writerFail(werr?.localizedDescription ?? "finishWriting failed")
+        }
+        guard wroteFrames else {
+            throw Err.writerFail("no frames recorded")
+        }
         return url
     }
 

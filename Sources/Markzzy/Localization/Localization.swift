@@ -18,6 +18,9 @@ public enum LKey: String, CaseIterable {
     // Face cam section
     case facecam, shape, size, position, border, color
     case orDragAbove, customPosition, metallicPreset
+    // Background removal (Reel/Post): toggle, transparent vs color, free shape.
+    case removeBackground, bgModeTransparent, bgModeColor, bgColorLabel, shapeFree
+    case bgModeNone, bgModeBlur, bgModeImage, bgBlurLabel, bgImageChoose
 
     // Sources section
     case sources, screen, sourceLabel, camera, mic, off, noneOption
@@ -214,6 +217,11 @@ public enum L10n {
             .position: "Position", .border: "Border", .color: "Color",
             .orDragAbove: "or drag above", .customPosition: "Custom (drag the PIP)",
             .metallicPreset: "Metallic preset",
+            .removeBackground: "Remove background",
+            .bgModeTransparent: "Transparent", .bgModeColor: "Color",
+            .bgColorLabel: "Background", .shapeFree: "Free (no shape)",
+            .bgModeNone: "None", .bgModeBlur: "Blur", .bgModeImage: "Image",
+            .bgBlurLabel: "Blur", .bgImageChoose: "Choose image…",
             .sources: "Sources",
             .screen: "Screen", .sourceLabel: "Source",
             .camera: "Camera",
@@ -445,6 +453,11 @@ public enum L10n {
             .position: "Posición", .border: "Borde", .color: "Color",
             .orDragAbove: "o arrastra arriba",
             .customPosition: "Personalizada (arrastra)",
+            .removeBackground: "Quitar fondo",
+            .bgModeTransparent: "Transparente", .bgModeColor: "Color",
+            .bgColorLabel: "Fondo", .shapeFree: "Libre (sin forma)",
+            .bgModeNone: "Ninguno", .bgModeBlur: "Desenfoque", .bgModeImage: "Imagen",
+            .bgBlurLabel: "Desenfoque", .bgImageChoose: "Elegir imagen…",
             .metallicPreset: "Estilo metálico",
             .sources: "Fuentes",
             .screen: "Pantalla", .sourceLabel: "Fuente",

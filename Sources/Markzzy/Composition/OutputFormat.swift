@@ -94,6 +94,18 @@ public enum OutputFormat: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+/// Background source for the camera in split-screen / camera-only layouts (where
+/// the camera fills its region, so a transparent cutout makes no sense). The
+/// person stays sharp; the background behind them is replaced.
+public enum FaceCamBg: String, CaseIterable, Identifiable, Codable {
+    case none    // raw camera, no removal
+    case blur    // the camera's own background, blurred (Zoom/Meet style)
+    case color   // solid color
+    case image   // custom image
+
+    public var id: String { rawValue }
+}
+
 /// How screen + camera are arranged on the canvas.
 public enum Layout: String, CaseIterable, Identifiable, Codable {
     case pipOverlay      // screen full + floating PIP (YouTube style)

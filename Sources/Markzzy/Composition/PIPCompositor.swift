@@ -27,6 +27,18 @@ public final class PIPCompositor {
     public var size: CGFloat
     public var shape: PIPShape
     public var border: PIPBorder
+    /// Mirror the camera horizontally (selfie flip).
+    public var mirror: Bool = false
+
+    // Background removal (parity with MetalCompositor).
+    public var removeBackground: Bool = false
+    public var bgModeValue: Int = 0      // 0=transparent 1=color 2=blur 3=image
+    public var bgFreeform: Bool = false
+    public var bgColor: CGColor = CGColor(red: 0.04, green: 0.52, blue: 1.0, alpha: 1)
+    public var bgBlurRadius: CGFloat = 0
+    public var bgImage: CVPixelBuffer?
+    /// Convenience for the pipOverlay cutout path (transparent vs anything else).
+    public var bgTransparent: Bool { bgModeValue == 0 }
 
     public init(position: CGPoint = CGPoint(x: 0.85, y: 0.12),
                 size: CGFloat = 0.22,
@@ -40,24 +52,168 @@ public final class PIPCompositor {
         self.ciContext = ciContext ?? Self.makeDefaultContext()
     }
 
-    public func update(position: CGPoint, size: CGFloat, shape: PIPShape, border: PIPBorder) {
+    public func update(position: CGPoint, size: CGFloat, shape: PIPShape,
+                       border: PIPBorder, mirror: Bool = false) {
         lock.lock(); defer { lock.unlock() }
         self.position = position
         self.size = size
         self.shape = shape
         self.border = border
+        self.mirror = mirror
     }
 
-    public func compose(base: CVPixelBuffer, overlay: CVPixelBuffer?) -> CIImage {
+    /// Flip a CIImage horizontally around its own vertical center.
+    private func mirroredX(_ img: CIImage) -> CIImage {
+        let e = img.extent
+        return img.transformed(by: CGAffineTransform(a: -1, b: 0, c: 0, d: 1,
+                                                     tx: e.minX + e.maxX, ty: 0))
+    }
+
+    public func updateBackground(removal: Bool, bgMode: Int, freeform: Bool,
+                                 color: CGColor, blurRadius: CGFloat, image: CVPixelBuffer?) {
+        lock.lock(); defer { lock.unlock() }
+        self.removeBackground = removal
+        self.bgModeValue = bgMode
+        self.bgFreeform = freeform
+        self.bgColor = color
+        self.bgBlurRadius = blurRadius
+        self.bgImage = image
+    }
+
+    /// Apply the person-segmentation matte to a camera CIImage. `mask` is the
+    /// low-res matte (person=white); we scale it to the camera extent. In
+    /// transparent mode the background becomes clear (alpha); in color mode it's
+    /// replaced by `bgColor`. Returns the camera image unchanged if no mask.
+    /// `bgMode`: 0=transparent (clear) 1=color 2=blur(camera) 3=image.
+    private func applyBackgroundRemoval(to cam: CIImage, mask: CVPixelBuffer?,
+                                        bgMode: Int, color: CGColor,
+                                        blurRadius: CGFloat, image: CVPixelBuffer?) -> CIImage {
+        guard let mask else { return cam }
+        var maskImg = CIImage(cvPixelBuffer: mask)
+        let mx = cam.extent.width / max(maskImg.extent.width, 1)
+        let my = cam.extent.height / max(maskImg.extent.height, 1)
+        maskImg = maskImg.transformed(by: CGAffineTransform(scaleX: mx, y: my))
+        // The matte is ALREADY edge-refined (joint-bilateral guided by the
+        // camera in PersonSegmenter), so its edge hugs the real hair/shoulder
+        // contour. Just a gentle anti-alias ramp ≈ smoothstep(0.35, 0.65) so the
+        // preview edge matches the Metal recording path: out = clamp((a-0.35)/0.30).
+        let mExtent = maskImg.extent
+        let lo: CGFloat = 0.42, hi: CGFloat = 0.60
+        let s: CGFloat = 1.0 / (hi - lo)
+        maskImg = maskImg
+            .applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: s, y: 0, z: 0, w: 0),
+                "inputGVector": CIVector(x: 0, y: s, z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: s, w: 0),
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+                "inputBiasVector": CIVector(x: -lo * s, y: -lo * s, z: -lo * s, w: 0),
+            ])
+            .applyingFilter("CIColorClamp")
+            .cropped(to: mExtent)
+        // Mirror the matte to match the mirrored camera (they must stay aligned).
+        if mirror { maskImg = mirroredX(maskImg).cropped(to: mExtent) }
+        let bg: CIImage
+        switch bgMode {
+        case 2:   // blurred camera (Zoom-style) — clamp edges so blur doesn't darken
+            bg = cam.clampedToExtent()
+                .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: blurRadius])
+                .cropped(to: cam.extent)
+        case 3 where image != nil:   // custom image, aspect-fill the camera extent
+            bg = Self.placeAspectFill(CIImage(cvPixelBuffer: image!), into: cam.extent)
+        case 1:   // solid color
+            bg = CIImage(color: CIColor(cgColor: color)).cropped(to: cam.extent)
+        default:  // transparent (clear)
+            bg = CIImage.empty().cropped(to: cam.extent)
+        }
+        // CIBlendWithMask can return an infinite extent — clamp to the camera
+        // so downstream createCGImage / placement never gets an infinite rect.
+        return cam.applyingFilter("CIBlendWithMask", parameters: [
+            kCIInputBackgroundImageKey: bg,
+            kCIInputMaskImageKey: maskImg,
+        ]).cropped(to: cam.extent)
+    }
+
+    /// Build a camera-only image with the background removed, for the LIVE
+    /// PREVIEW. `freeform` → no shape mask (free silhouette, native aspect);
+    /// otherwise the camera is square-cropped and clipped to `shape`.
+    /// `transparent` → clear background (composites over the screen); else the
+    /// background becomes the solid `color`. Returns a CGImage with alpha, or
+    /// nil if no mask is available yet (~20fps on the preview queue).
+    /// Result of a preview compose: the image plus its aspect (W/H) so the slot
+    /// can be sized to a tight (bbox-cropped) silhouette.
+    public struct PreviewImage { public let cgImage: CGImage; public let aspect: CGFloat }
+
+    public func composeCameraOnly(camera: CVPixelBuffer, mask: CVPixelBuffer?,
+                                  shape: PIPShape, freeform: Bool, split: Bool,
+                                  bgMode: Int, color: CGColor,
+                                  blurRadius: CGFloat, image: CVPixelBuffer?) -> PreviewImage? {
+        guard mask != nil else { return nil }
+        var cam = CIImage(cvPixelBuffer: camera)
+        if mirror { cam = mirroredX(cam) }
+        // Camera extent is FINITE and known; everything below is anchored to it.
+        // CIBlendWithMask can yield an INFINITE extent, and createCGImage with an
+        // infinite rect returns nil → the effect silently never appears. Clamp.
+        let camExtent = cam.extent
+
+        // Apply the matte on the full-resolution camera first so the mask stays
+        // pixel-aligned with the person, then clamp back to the camera extent.
+        let removed = applyBackgroundRemoval(to: cam, mask: mask, bgMode: bgMode,
+                                             color: color, blurRadius: blurRadius, image: image)
+            .cropped(to: camExtent)
+
+        // Rasterize with an EXPLICIT RGBA8 + sRGB format so the matte's alpha
+        // survives. The default createCGImage(_:from:) flattens alpha → the
+        // transparent cutout came out opaque/black and hid the screen.
+        let fmt = CIFormat.RGBA8
+        let cs = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+
+        // Split / camera-only: the camera fills its slot, so show the FULL frame
+        // with its background replaced (no shape, no cutout).
+        if freeform || split || shape == .rectangle {
+            // Freeform silhouette: FULL camera frame at native aspect. Size is
+            // fixed by the user's slider — NOT derived from the person's bbox —
+            // so changing pose (hands up/out) never rescales the cutout.
+            guard let cg = ciContext.createCGImage(removed, from: camExtent, format: fmt, colorSpace: cs)
+            else { return nil }
+            let aspect = camExtent.height > 0 ? camExtent.width / camExtent.height : 1
+            return PreviewImage(cgImage: cg, aspect: aspect)
+        }
+
+        // Center square-crop the already-removed image, then clip to the shape.
+        let side = min(camExtent.width, camExtent.height)
+        let cropX = camExtent.minX + (camExtent.width  - side) / 2
+        let cropY = camExtent.minY + (camExtent.height - side) / 2
+        let square = removed
+            .cropped(to: CGRect(x: cropX, y: cropY, width: side, height: side))
+            .transformed(by: CGAffineTransform(translationX: -cropX, y: -cropY))
+        let masked = applyShapeMask(to: square, shape: shape, width: side, height: side)
+        guard let cg = ciContext.createCGImage(masked, from: CGRect(x: 0, y: 0, width: side, height: side),
+                                               format: fmt, colorSpace: cs) else { return nil }
+        return PreviewImage(cgImage: cg, aspect: 1)  // shaped = square
+    }
+
+    public func compose(base: CVPixelBuffer, overlay: CVPixelBuffer?,
+                        mask: CVPixelBuffer? = nil) -> CIImage {
         let baseImage = CIImage(cvPixelBuffer: base)
         guard let overlay else { return baseImage }
 
         lock.lock()
         let pos = position; let sz = size; let sh = shape; let bd = border
+        let rmBg = removeBackground; let bgM = bgModeValue; let bgCol = bgColor
+        let blurR = bgBlurRadius; let bgImg = bgImage; let mir = mirror
         lock.unlock()
 
         let baseExtent = baseImage.extent
-        let cam = CIImage(cvPixelBuffer: overlay)
+        // Background removal on but the matte isn't ready yet (warm-up at the
+        // start of recording) → hide the camera entirely so the raw background
+        // never flashes; just return the screen until the first matte arrives.
+        if rmBg, mask == nil { return baseImage }
+        var cam = CIImage(cvPixelBuffer: overlay)
+        if mir { cam = mirroredX(cam) }
+        if rmBg, let mask {
+            cam = applyBackgroundRemoval(to: cam, mask: mask, bgMode: bgM,
+                                         color: bgCol, blurRadius: blurR, image: bgImg)
+        }
 
         let pipW = baseExtent.width * sz
         // Non-rectangular shapes (circle, hexagon, etc.) expect a square PIP,
@@ -85,7 +241,9 @@ public final class PIPCompositor {
         var originX = centerX - pipW / 2
         var originY = centerY - pipH / 2
 
-        let pad: CGFloat = bd.cgColor != nil ? bd.lineWidth : 4
+        // Border width is proportional to the pip diameter (see PIPBorder).
+        let strokeW = bd.strokeWidth(forDiameter: min(pipW, pipH))
+        let pad: CGFloat = bd.cgColor != nil ? strokeW : 4
         originX = min(max(originX, pad), baseExtent.width  - pipW - pad)
         originY = min(max(originY, pad), baseExtent.height - pipH - pad)
 
@@ -108,7 +266,7 @@ public final class PIPCompositor {
                                                  width: pipW, height: pipH,
                                                  color: borderColor,
                                                  color2: bd.color2,
-                                                 lineWidth: bd.lineWidth) {
+                                                 lineWidth: strokeW) {
                 let placed = strokeImage.transformed(by: CGAffineTransform(
                     translationX: originX, y: originY
                 ))
@@ -130,6 +288,7 @@ public final class PIPCompositor {
     /// letterboxing or stretching.
     public func render(screen: CVPixelBuffer?,
                        camera: CVPixelBuffer?,
+                       mask: CVPixelBuffer? = nil,
                        into out: CVPixelBuffer,
                        layout: Layout,
                        screenAnchor: ScreenAnchor) {
@@ -137,10 +296,27 @@ public final class PIPCompositor {
         let outH = CGFloat(CVPixelBufferGetHeight(out))
         let canvasRect = CGRect(x: 0, y: 0, width: outW, height: outH)
 
+        lock.lock()
+        let rmBg = removeBackground; let bgM = bgModeValue; let bgCol = bgColor
+        let blurR = bgBlurRadius; let bgImg = bgImage; let mir = mirror
+        lock.unlock()
+        // For full-frame layouts (split) transparent has no backdrop, so fall
+        // back to the solid color there.
+        func camImage(_ buf: CVPixelBuffer, fullFrame: Bool) -> CIImage {
+            var img = CIImage(cvPixelBuffer: buf)
+            if mir { img = mirroredX(img) }
+            if rmBg {
+                let mode = (fullFrame && bgM == 0) ? 1 : bgM
+                img = applyBackgroundRemoval(to: img, mask: mask, bgMode: mode,
+                                             color: bgCol, blurRadius: blurR, image: bgImg)
+            }
+            return img
+        }
+
         if layout == .pipOverlay {
             // Preserve current behavior exactly: pass through compose().
             if let screen {
-                let composed = compose(base: screen, overlay: camera)
+                let composed = compose(base: screen, overlay: camera, mask: mask)
                 ciContext.render(composed, to: out)
             } else {
                 ciContext.render(CIImage(color: .black).cropped(to: canvasRect), to: out)
@@ -155,7 +331,7 @@ public final class PIPCompositor {
             break
         case .cameraOnly:
             if let cam = camera {
-                result = Self.placeAspectFill(CIImage(cvPixelBuffer: cam), into: canvasRect)
+                result = Self.placeAspectFill(camImage(cam, fullFrame: true), into: canvasRect)
                     .composited(over: result)
             }
         case .screenOnly:
@@ -181,7 +357,7 @@ public final class PIPCompositor {
                 result = Self.placeInSlot(cropped, into: screenSlot).composited(over: result)
             }
             if let c = camera {
-                result = Self.placeAspectFill(CIImage(cvPixelBuffer: c), into: cameraSlot)
+                result = Self.placeAspectFill(camImage(c, fullFrame: false), into: cameraSlot)
                     .composited(over: result)
             }
         }
@@ -282,162 +458,15 @@ public final class PIPCompositor {
                                  width w: CGFloat, height h: CGFloat,
                                  color: CGColor, color2: CGColor,
                                  lineWidth lw: CGFloat) -> CIImage? {
-        // Styles that emit a shadow/glow need a padded canvas so the blur
-        // isn't clipped at the bounding box. The image is offset back by `pad`.
-        let pad: CGFloat
-        switch style {
-        case .glow: pad = lw * 3
-        case .neon: pad = lw * 6
-        default:    pad = 0
-        }
-        let bufW = Int(ceil(w + 2 * pad))
-        let bufH = Int(ceil(h + 2 * pad))
-        guard let buf = makeBGRABuffer(width: bufW, height: bufH, draw: { ctx in
-            ctx.translateBy(x: pad, y: pad)
-            ctx.setStrokeColor(color)
-            switch style {
-            case .none:
-                break
-            case .solid:
-                shape.drawStroke(in: ctx, width: w, height: h, lineWidth: lw)
-            case .gradient:
-                Self.drawConicGradientStroke(
-                    in: ctx, shape: shape,
-                    width: w, height: h, lineWidth: lw,
-                    colors: PIPBorder.gradientPalette(from: color, to: color2)
-                )
-            case .chrome:
-                Self.drawLinearGradientStroke(
-                    in: ctx, shape: shape,
-                    width: w, height: h, lineWidth: lw,
-                    colors: PIPBorder.chromePalette,
-                    locations: [0, 0.3, 0.5, 0.7, 1],
-                    vertical: true
-                )
-            case .neon:
-                // Wider blur + thicker core line than `glow` for a laser-tube feel.
-                ctx.setShadow(offset: .zero, blur: lw * 6, color: color)
-                shape.drawStroke(in: ctx, width: w, height: h, lineWidth: max(1, lw))
-            case .glow:
-                ctx.setShadow(offset: .zero, blur: lw * 3, color: color)
-                shape.drawStroke(in: ctx, width: w, height: h, lineWidth: max(1, lw * 0.8))
-            }
-        }) else { return nil }
-
+        // Shared renderer (same ring as the Metal recording path + the bubble).
+        guard let (buf, pad) = BorderRenderer.makeRing(
+            shape: shape, style: style, width: w, height: h,
+            color: color, color2: color2, lineWidth: lw) else { return nil }
         var image = CIImage(cvPixelBuffer: buf)
         if pad > 0 {
             image = image.transformed(by: CGAffineTransform(translationX: -pad, y: -pad))
         }
         return image
-    }
-
-    /// Draw an angular-gradient stroke of `shape` clipped to the stroke outline.
-    /// Renders 180 pie wedges of interpolated colors within the shape's stroked ring.
-    static func drawConicGradientStroke(in ctx: CGContext, shape: PIPShape,
-                                        width w: CGFloat, height h: CGFloat,
-                                        lineWidth lw: CGFloat, colors: [CGColor]) {
-        let inset = lw / 2
-        let outer = CGRect(x: inset, y: inset, width: w - lw, height: h - lw)
-        let innerInset = inset + lw
-        let inner = CGRect(
-            x: innerInset, y: innerInset,
-            width: max(0, w - 2 * innerInset),
-            height: max(0, h - 2 * innerInset)
-        )
-
-        // Build a ring-shaped clip path (outer minus inner, even-odd fill).
-        let ring = CGMutablePath()
-        ring.addPath(shape.shapePath(in: outer))
-        if inner.width > 0, inner.height > 0 {
-            ring.addPath(shape.shapePath(in: inner))
-        }
-
-        ctx.saveGState()
-        ctx.addPath(ring)
-        ctx.clip(using: .evenOdd)
-
-        let center = CGPoint(x: w / 2, y: h / 2)
-        let radius = hypot(w, h)  // guarantees wedges cover the whole ring
-        let steps = 180
-
-        for i in 0..<steps {
-            let t0 = CGFloat(i)     / CGFloat(steps)
-            let t1 = CGFloat(i + 1) / CGFloat(steps)
-            // Start at top (12 o'clock) and sweep clockwise.
-            let a0 = t0 * 2 * .pi - .pi / 2
-            let a1 = t1 * 2 * .pi - .pi / 2
-            let color = interpolate(colors, at: t0)
-            ctx.setFillColor(color)
-            ctx.beginPath()
-            ctx.move(to: center)
-            ctx.addArc(center: center, radius: radius,
-                       startAngle: a0, endAngle: a1, clockwise: false)
-            ctx.closePath()
-            ctx.fillPath()
-        }
-
-        ctx.restoreGState()
-    }
-
-    /// Draw a LINEAR gradient clipped to the shape's stroke ring.
-    static func drawLinearGradientStroke(in ctx: CGContext, shape: PIPShape,
-                                         width w: CGFloat, height h: CGFloat,
-                                         lineWidth lw: CGFloat,
-                                         colors: [CGColor],
-                                         locations: [CGFloat],
-                                         vertical: Bool) {
-        let inset = lw / 2
-        let outer = CGRect(x: inset, y: inset, width: w - lw, height: h - lw)
-        let innerInset = inset + lw
-        let inner = CGRect(
-            x: innerInset, y: innerInset,
-            width: max(0, w - 2 * innerInset),
-            height: max(0, h - 2 * innerInset)
-        )
-        let ring = CGMutablePath()
-        ring.addPath(shape.shapePath(in: outer))
-        if inner.width > 0, inner.height > 0 {
-            ring.addPath(shape.shapePath(in: inner))
-        }
-
-        ctx.saveGState()
-        ctx.addPath(ring)
-        ctx.clip(using: .evenOdd)
-
-        guard let gradient = CGGradient(
-            colorsSpace: CGColorSpaceCreateDeviceRGB(),
-            colors: colors as CFArray,
-            locations: locations
-        ) else {
-            ctx.restoreGState()
-            return
-        }
-
-        let start = vertical ? CGPoint(x: 0, y: 0)   : CGPoint(x: 0, y: 0)
-        let end   = vertical ? CGPoint(x: 0, y: h)   : CGPoint(x: w, y: 0)
-        ctx.drawLinearGradient(gradient, start: start, end: end, options: [])
-        ctx.restoreGState()
-    }
-
-    private static func interpolate(_ colors: [CGColor], at t: CGFloat) -> CGColor {
-        guard colors.count > 1 else {
-            return colors.first ?? CGColor(gray: 0, alpha: 1)
-        }
-        let segments = CGFloat(colors.count - 1)
-        let scaled = max(0, min(t, 1)) * segments
-        let i = min(Int(scaled), colors.count - 2)
-        let frac = scaled - CGFloat(i)
-        let c1 = colors[i].components ?? [0, 0, 0, 1]
-        let c2 = colors[i + 1].components ?? [0, 0, 0, 1]
-        func lerp(_ a: CGFloat, _ b: CGFloat) -> CGFloat { a + (b - a) * frac }
-        let a1 = c1.count > 3 ? c1[3] : 1
-        let a2 = c2.count > 3 ? c2[3] : 1
-        return CGColor(
-            red:   lerp(c1[0], c2[0]),
-            green: lerp(c1[1], c2[1]),
-            blue:  lerp(c1[2], c2[2]),
-            alpha: a1 + (a2 - a1) * frac
-        )
     }
 
     private func makeBGRABuffer(width: Int, height: Int,

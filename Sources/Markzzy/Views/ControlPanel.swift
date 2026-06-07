@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 import AVFoundation
 
 struct ControlPanel: View {
@@ -74,18 +76,46 @@ struct ControlPanel: View {
                     formatBox
                         .padding(.horizontal, 16)
 
-                    if model.outputFormat == .youtube {
+                    // Face-cam shape/size/position/border for the floating PIP
+                    // (YouTube, and Reel/Post when in a PIP-overlay style).
+                    // Background removal is no longer a toggle here — it's chosen
+                    // via the two camera styles in the Layout picker (Reel/Post).
+                    // When the circular style is active we expose its bg color.
+                    if model.layout == .pipOverlay {
                         GroupBox {
                             VStack(spacing: 12) {
-                                shapeRow
-                                Divider()
-                                sizeRow
-                                Divider()
-                                positionRow
-                                Divider()
-                                borderStyleRow
-                                if model.pipBorder.style != .none {
-                                    borderCustomRow
+                                if model.outputFormat != .youtube {
+                                    // Reel/Post: the floating camera is ALWAYS
+                                    // background-removed. No toggle — just choose
+                                    // Transparent (silhouette over the screen) or
+                                    // Color (shaped, color behind).
+                                    backgroundModeRow
+                                    if model.faceCamBgTransparent {
+                                        Divider()
+                                        sizeRow
+                                        Divider()
+                                        positionRow
+                                    } else {
+                                        backgroundColorRow
+                                        Divider()
+                                        shapeRow
+                                        Divider()
+                                        sizeRow
+                                        Divider()
+                                        positionRow
+                                    }
+                                } else {
+                                    // YouTube: plain floating PIP (no removal).
+                                    shapeRow
+                                    Divider()
+                                    sizeRow
+                                    Divider()
+                                    positionRow
+                                    Divider()
+                                    borderStyleRow
+                                    if model.pipBorder.style != .none {
+                                        borderCustomRow
+                                    }
                                 }
                             }
                             .padding(.vertical, 4)
@@ -93,11 +123,28 @@ struct ControlPanel: View {
                             Label(model.t(.facecam), systemImage: "person.crop.circle")
                         }
                         .padding(.horizontal, 16)
-                    } else if model.layout == .pipOverlay {
-                        Text(model.t(.faceCamHiddenNote))
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 16)
+                    }
+
+                    // Split-screen / camera-only: choose the camera's background
+                    // (none / blur / color / image). The person stays sharp.
+                    if model.layout == .splitScreenTop || model.layout == .splitCamTop
+                        || model.layout == .cameraOnly {
+                        GroupBox {
+                            VStack(spacing: 12) {
+                                splitBgModeRow
+                                if model.faceCamBgMode == .blur {
+                                    Divider(); blurRadiusRow
+                                } else if model.faceCamBgMode == .color {
+                                    Divider(); backgroundColorRow
+                                } else if model.faceCamBgMode == .image {
+                                    Divider(); bgImageRow
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        } label: {
+                            Label(model.t(.facecam), systemImage: "person.crop.circle")
+                        }
+                        .padding(.horizontal, 16)
                     }
 
                     GroupBox {
@@ -174,9 +221,6 @@ struct ControlPanel: View {
         }
         .frame(width: 500, height: 720)
         .background(Color(NSColor.windowBackgroundColor))
-        .onChange(of: model.selectedCamera) { _, new in
-            model.applyPreviewCamera(new)
-        }
         .onChange(of: model.state) { _, new in
             // Swap back to Canvas as soon as we enter prep/recording so the
             // user never mistakes the IG/TikTok chrome overlay for actual
@@ -568,12 +612,19 @@ struct ControlPanel: View {
     }
 
     private var sizeRow: some View {
-        HStack(spacing: 10) {
+        // Background-removed face cams can go much bigger — there's no opaque box
+        // covering the screen. The TRANSPARENT silhouette goes up to 3× so a
+        // landscape webcam (16:9) can still fill a vertical Reel (9:16): the
+        // person scales up and the transparent side margins overflow off-canvas
+        // (invisible), while the head-safe clamp keeps the head on screen.
+        let maxSize: CGFloat = model.faceCamBottomAnchored ? 3.0
+            : (model.backgroundRemovalActive ? 1.0 : 0.40)
+        return HStack(spacing: 10) {
             Text(model.t(.size)).frame(width: 95, alignment: .leading)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
-            Slider(value: $model.pipSize, in: 0.10...0.40)
+            Slider(value: $model.pipSize, in: 0.10...maxSize)
             Text("\(Int(model.pipSize * 100))%")
                 .monospacedDigit()
                 .frame(width: 38, alignment: .trailing)
@@ -592,7 +643,7 @@ struct ControlPanel: View {
                 cornerButton(.topRight,    icon: "arrow.up.right")
                 cornerButton(.bottomLeft,  icon: "arrow.down.left")
                 cornerButton(.bottomRight, icon: "arrow.down.right")
-                customButton
+                customButton   // custom (free drag) last
             }
             Spacer()
             Text(model.t(.orDragAbove))
@@ -674,6 +725,97 @@ struct ControlPanel: View {
                 .fill(active ? Color.accentColor : Color.secondary.opacity(0.12))
         )
         .help(s.localizedLabel(model.language))
+    }
+
+    // Background = Transparent (over the screen) vs solid Color.
+    private var backgroundModeRow: some View {
+        HStack(spacing: 10) {
+            Text(model.t(.bgColorLabel)).frame(width: 95, alignment: .leading)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Picker("", selection: Binding(
+                get: { model.faceCamBgTransparent },
+                set: { model.faceCamBgTransparent = $0 }
+            )) {
+                Text(model.t(.bgModeTransparent)).tag(true)
+                Text(model.t(.bgModeColor)).tag(false)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+        }
+    }
+
+    // Split-screen / camera-only background source picker.
+    private var splitBgModeRow: some View {
+        HStack(spacing: 10) {
+            Text(model.t(.bgColorLabel)).frame(width: 95, alignment: .leading)
+                .foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
+            Picker("", selection: $model.faceCamBgMode) {
+                Text(model.t(.bgModeNone)).tag(FaceCamBg.none)
+                Text(model.t(.bgModeBlur)).tag(FaceCamBg.blur)
+                Text(model.t(.bgModeColor)).tag(FaceCamBg.color)
+                Text(model.t(.bgModeImage)).tag(FaceCamBg.image)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+        }
+    }
+
+    private var blurRadiusRow: some View {
+        HStack(spacing: 10) {
+            Text(model.t(.bgBlurLabel)).frame(width: 95, alignment: .leading)
+                .foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
+            Slider(value: $model.faceCamBlurRadius, in: 4...40)
+            Text("\(Int(model.faceCamBlurRadius))")
+                .monospacedDigit().frame(width: 38, alignment: .trailing)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var bgImageRow: some View {
+        HStack(spacing: 10) {
+            Text(model.t(.bgColorLabel)).frame(width: 95, alignment: .leading)
+                .foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
+            Button(model.faceCamBgImageURL?.lastPathComponent ?? model.t(.bgImageChoose)) {
+                chooseBgImage()
+            }
+            .lineLimit(1).truncationMode(.middle)
+            if model.faceCamBgImageURL != nil {
+                Button { model.faceCamBgImageURL = nil } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.borderless)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func chooseBgImage() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png, .jpeg, .heic, .image]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        if panel.runModal() == .OK, let url = panel.url {
+            model.faceCamBgImageURL = url
+        }
+    }
+
+    // Solid background color picker — shown in color mode.
+    private var backgroundColorRow: some View {
+        HStack(spacing: 10) {
+            Text(model.t(.bgColorLabel)).frame(width: 95, alignment: .leading)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            ColorPicker("", selection: Binding(
+                get: { Color(cgColor: model.faceCamBgColor) },
+                set: { model.faceCamBgColor = NSColor($0).cgColor }
+            ), supportsOpacity: false)
+            .labelsHidden()
+            .frame(width: 32)
+            Spacer()
+        }
     }
 
     private var borderCustomRow: some View {

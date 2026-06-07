@@ -66,7 +66,15 @@ public final class AppModel: ObservableObject {
             Task { await livePreview.start(for: s) }
         }
     }
-    @Published public var selectedCamera: AVCaptureDevice?
+    @Published public var selectedCamera: AVCaptureDevice? {
+        didSet {
+            guard oldValue?.uniqueID != selectedCamera?.uniqueID else { return }
+            // Rebind the preview to the new device AND re-assert the effect
+            // pipeline (idle-gated). Fixes "switching iPhone→FaceTime doesn't
+            // load the cutout first time". No-op while recording.
+            reattachPreviewCameraIfIdle()
+        }
+    }
 
     /// True when the user has asked for the iPhone slot but no actual
     /// iPhone-like device is bound yet. Drives the "Looking for your
@@ -133,17 +141,112 @@ public final class AppModel: ObservableObject {
 
     // MARK: - Face cam (persisted when rememberFaceCam is on)
 
-    @Published public var pipPosition: CGPoint = AppModel.loadedFaceCam().position {
+    /// Guard set during a format swap so the bulk reassignment of face-cam
+    /// properties doesn't re-persist mid-swap (see `reconcileFaceCam`).
+    var isReconcilingFaceCam = false
+
+    @Published public var pipPosition: CGPoint =
+        AppModel.liveSizePosition(for: AppModel.loadedFaceCam(for: AppModel.loadFormat())).1 {
         didSet { pushPIP(); saveFaceCamIfEnabled() }
     }
-    @Published public var pipSize: CGFloat = AppModel.loadedFaceCam().size {
+    @Published public var pipSize: CGFloat =
+        AppModel.liveSizePosition(for: AppModel.loadedFaceCam(for: AppModel.loadFormat())).0 {
         didSet { pushPIP(); saveFaceCamIfEnabled() }
     }
-    @Published public var pipShape: PIPShape = AppModel.loadedFaceCam().shape {
+    @Published public var pipShape: PIPShape = AppModel.loadedFaceCam(for: AppModel.loadFormat()).shape {
         didSet { pushPIP(); saveFaceCamIfEnabled() }
     }
-    @Published public var pipBorder: PIPBorder = AppModel.loadedFaceCam().border {
+    @Published public var pipBorder: PIPBorder = AppModel.loadedFaceCam(for: AppModel.loadFormat()).border {
         didSet { pushPIP(); saveFaceCamIfEnabled() }
+    }
+
+    /// Background removal (person segmentation). When on, the camera background
+    /// is removed: `faceCamBgTransparent` true = floating cutout over the
+    /// screen; false = replaced by `faceCamBgColor` inside the shape.
+    @Published public var removeBackground: Bool = AppModel.loadedFaceCam(for: AppModel.loadFormat()).removeBackground {
+        didSet {
+            if removeBackground {
+                // Entering removal: transparent ⇒ free silhouette right away
+                // (the transparent didSet won't fire if it was already true).
+                if faceCamBgTransparent, !faceCamFreeform { faceCamFreeform = true }
+            } else {
+                // The plain-PIP size slider caps at 40%; clamp back into range.
+                if pipSize > 0.40 { pipSize = 0.40 }
+            }
+            pushBackground(); saveFaceCamIfEnabled(); updatePreviewEffectPipeline()
+        }
+    }
+    @Published public var faceCamBgTransparent: Bool = AppModel.loadedFaceCam(for: AppModel.loadFormat()).bgTransparent {
+        didSet {
+            guard faceCamBgTransparent != oldValue else { return }
+            // Swap size+position to this mode's own saved sub-slot (transparent
+            // vs color are independent within a format).
+            if !isReconcilingFaceCam {
+                reconcileFaceCamMode(enteringTransparent: faceCamBgTransparent)
+            }
+            // Transparent = pure silhouette (free, no shape). Color = shaped, so
+            // default freeform off (fall back to a circle) when leaving transparent.
+            if faceCamBgTransparent {
+                if !faceCamFreeform { faceCamFreeform = true }
+            } else if faceCamFreeform {
+                faceCamFreeform = false
+                if pipShape == .rectangle { pipShape = .circle }
+            }
+            pushBackground(); saveFaceCamIfEnabled(); updatePreviewEffectPipeline()
+        }
+    }
+    @Published public var faceCamBgColor: CGColor = AppModel.loadedFaceCam(for: AppModel.loadFormat()).bgColor {
+        didSet { pushBackground(); saveFaceCamIfEnabled() }
+    }
+    /// Freeform = no shape clip (free silhouette/full-body cutout) when
+    /// background removal is on. false = clip to `pipShape`.
+    @Published public var faceCamFreeform: Bool = AppModel.loadedFaceCam(for: AppModel.loadFormat()).freeform {
+        didSet { pushBackground(); saveFaceCamIfEnabled(); updatePreviewEffectPipeline() }
+    }
+
+    // MARK: - Split-screen / camera-only background (blur / color / image)
+    // Separate from the pipOverlay transparent/color machinery above. When the
+    // camera fills its region (split or camera-only) the person stays sharp and
+    // the background behind them is replaced.
+    @Published public var faceCamBgMode: FaceCamBg =
+        FaceCamBg(rawValue: UserDefaults.standard.string(forKey: "faceCamBgMode") ?? "") ?? .none {
+        didSet {
+            guard faceCamBgMode != oldValue else { return }
+            UserDefaults.standard.set(faceCamBgMode.rawValue, forKey: "faceCamBgMode")
+            pushBackground(); updatePreviewEffectPipeline()
+        }
+    }
+    @Published public var faceCamBlurRadius: CGFloat = {
+        let v = UserDefaults.standard.double(forKey: "faceCamBlurRadius")
+        return v > 0 ? CGFloat(v) : 18
+    }() {
+        didSet {
+            UserDefaults.standard.set(Double(faceCamBlurRadius), forKey: "faceCamBlurRadius")
+            pushBackground()
+        }
+    }
+    @Published public var faceCamBgImageURL: URL? =
+        UserDefaults.standard.string(forKey: "faceCamBgImageURL").map { URL(fileURLWithPath: $0) } {
+        didSet {
+            UserDefaults.standard.set(faceCamBgImageURL?.path, forKey: "faceCamBgImageURL")
+            pushBackground()
+        }
+    }
+    /// Mirror the face cam horizontally (selfie flip). Applies to the recording,
+    /// the composed preview, and the floating bubble.
+    @Published public var faceCamMirror: Bool = UserDefaults.standard.bool(forKey: "faceCamMirror") {
+        didSet {
+            UserDefaults.standard.set(faceCamMirror, forKey: "faceCamMirror")
+            pushPIP()
+            floatingCam?.setMirror(faceCamMirror)
+        }
+    }
+
+    /// True when the camera fills its own region (split / camera-only) AND a
+    /// background replacement is selected → segmentation + bg compositing on.
+    public var splitBgActive: Bool {
+        (layout == .splitScreenTop || layout == .splitCamTop || layout == .cameraOnly)
+            && faceCamBgMode != .none
     }
 
     // MARK: - Preferences (persisted)
@@ -170,22 +273,39 @@ public final class AppModel: ObservableObject {
     }
     @Published public var outputFormat: OutputFormat = AppModel.loadFormat() {
         didSet {
+            guard outputFormat != oldValue else { return }
             UserDefaults.standard.set(outputFormat.rawValue, forKey: Keys.format)
-            // Auto-reconcile layout: only pipOverlay makes sense on YouTube,
-            // and pipOverlay doesn't make sense on vertical/square.
+            // Swap face-cam settings to this format's own saved values (size,
+            // position, shape, border, style) — they're independent per format.
+            reconcileFaceCam(from: oldValue, to: outputFormat)
+            // YouTube only supports the floating PIP. Reel/Post keep whatever
+            // layout was chosen — pipOverlay there is the background-removed
+            // floating camera (valid), splits/camera-only are also valid.
             if outputFormat == .youtube, layout != .pipOverlay {
                 layout = .pipOverlay
-            } else if outputFormat != .youtube, layout == .pipOverlay {
-                layout = .splitScreenTop
             }
-            reattachPreviewCameraIfIdle()
+            // Reel/Post pipOverlay = always background-removed; YouTube = never.
+            syncRemovalForContext()
+            // Persist the (possibly overridden) values for the new format.
+            saveFaceCamIfEnabled()
+            reattachPreviewCameraIfIdle()  // also refreshes the preview effect
         }
     }
     @Published public var layout: Layout = AppModel.loadLayout() {
         didSet {
             UserDefaults.standard.set(layout.rawValue, forKey: Keys.layout)
+            syncRemovalForContext()
             reattachPreviewCameraIfIdle()
         }
+    }
+
+    /// Background removal is on automatically for the Reel/Post floating camera
+    /// (pipOverlay) and off for YouTube / split / camera-only layouts. There's
+    /// no user toggle — the Background (Transparent/Color) control is always
+    /// shown for that context instead.
+    private func syncRemovalForContext() {
+        let shouldRemove = outputFormat != .youtube && layout == .pipOverlay
+        if removeBackground != shouldRemove { removeBackground = shouldRemove }
     }
 
     /// Re-bind the camera to the preview session and force the camera
@@ -204,6 +324,52 @@ public final class AppModel: ObservableObject {
         }
         applyPreviewCamera(selectedCamera)
         previewSessionGeneration &+= 1
+        updatePreviewEffectPipeline()
+    }
+
+    /// Attach/detach the live background-removal effect on the PREVIEW session.
+    /// Only active when a camera style is selected AND we're idle (the
+    /// recording pipeline owns the camera otherwise). Wires a data output to
+    /// the preview session and routes frames through `PreviewEffectRenderer`.
+    func updatePreviewEffectPipeline() {
+        let idle: Bool = { switch state { case .idle, .done, .failed: return true; default: return false } }()
+        let wantEffect = idle && backgroundRemovalActive && previewInput != nil
+
+        if wantEffect {
+            previewEffectRenderer.onFrame = { [weak self] img, aspect in
+                self?.faceCamEffectImage = img
+                self?.faceCamEffectAspect = aspect
+            }
+            pushBackground()   // sync the effect renderer params for this layout
+            // (Re)attach the data output. A camera swap reconfigures the session
+            // and can drop the output while our reference stays non-nil — so
+            // re-add whenever it's not actually attached, not just when nil.
+            let attached = previewVideoOutput.map { previewSession.outputs.contains($0) } ?? false
+            if !attached {
+                if let stale = previewVideoOutput, previewSession.outputs.contains(stale) {
+                    previewSession.beginConfiguration()
+                    previewSession.removeOutput(stale)
+                    previewSession.commitConfiguration()
+                }
+                let out = AVCaptureVideoDataOutput()
+                out.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+                out.alwaysDiscardsLateVideoFrames = true
+                out.setSampleBufferDelegate(previewEffectRenderer, queue: previewEffectQueue)
+                previewSession.beginConfiguration()
+                if previewSession.canAddOutput(out) { previewSession.addOutput(out) }
+                previewSession.commitConfiguration()
+                previewVideoOutput = out
+            }
+        } else {
+            if let out = previewVideoOutput {
+                previewSession.beginConfiguration()
+                previewSession.removeOutput(out)
+                previewSession.commitConfiguration()
+                previewVideoOutput = nil
+            }
+            previewEffectRenderer.reset()
+            faceCamEffectImage = nil
+        }
     }
     @Published public var screenAnchor: ScreenAnchor = AppModel.loadScreenAnchor() {
         didSet { UserDefaults.standard.set(screenAnchor.rawValue, forKey: Keys.screenAnchor) }
@@ -242,8 +408,25 @@ public final class AppModel: ObservableObject {
     private let permissions = Permissions()
     private var pipeline: CapturePipeline?
 
+    /// Loom-style floating camera bubble, alive only while recording in the
+    /// YouTube / pipOverlay layout. Dragging/resizing it drives `pipPosition` /
+    /// `pipSize` live so the recorded camera follows it in real time.
+    private var floatingCam: FloatingCameraPanel?
+
     public let previewSession = AVCaptureSession()
     var previewInput: AVCaptureDeviceInput?
+
+    /// Live face-cam effect (circular/cutout) for the idle preview. Set by the
+    /// `PreviewEffectRenderer`; the preview view shows this CGImage in the
+    /// camera slot instead of the raw AVCaptureVideoPreviewLayer when a style
+    /// is active. nil = no effect (show raw camera).
+    @Published public var faceCamEffectImage: CGImage?
+    /// Aspect (W/H) of the current effect image — used to size the slot to a
+    /// tight (bbox-cropped) silhouette so it can sit flush at the bottom.
+    @Published public var faceCamEffectAspect: CGFloat = 0.5
+    private let previewEffectRenderer = PreviewEffectRenderer()
+    private var previewVideoOutput: AVCaptureVideoDataOutput?
+    private let previewEffectQueue = DispatchQueue(label: "markzzy.preview-effect", qos: .userInitiated)
     /// Bumped on each recording stop so SwiftUI rebuilds the camera
     /// preview NSView. Without this, AVCaptureVideoPreviewLayer holds
     /// onto its pre-recording state and never re-engages with the
@@ -287,6 +470,9 @@ public final class AppModel: ObservableObject {
         micMonitor.onLevel = { [weak self] level in
             Task { @MainActor in self?.micLevel = level }
         }
+        // Background removal is contextual (Reel/Post pipOverlay = on). Make sure
+        // the persisted flag matches the launch format/layout.
+        syncRemovalForContext()
     }
 
     deinit {
@@ -413,6 +599,96 @@ public final class AppModel: ObservableObject {
         await startRecording()
     }
 
+    // MARK: - Floating camera bubble (Loom-style)
+
+    /// True when the floating bubble should be used: YouTube format, the
+    /// floating-PIP layout, and a camera selected.
+    private var floatingCamEligible: Bool {
+        outputFormat == .youtube && layout == .pipOverlay && selectedCamera != nil
+    }
+
+    /// The `NSScreen` matching the captured display, for coordinate mapping.
+    private func nsScreen(for source: ScreenSource) -> NSScreen? {
+        guard let displayID = source.display?.displayID else { return NSScreen.main }
+        let key = NSDeviceDescriptionKey("NSScreenNumber")
+        return NSScreen.screens.first {
+            ($0.deviceDescription[key] as? CGDirectDisplayID) == displayID
+        } ?? NSScreen.main
+    }
+
+    /// Initial bubble frame (global AppKit coords) derived from the current
+    /// `pipPosition` (top-left normalized) and `pipSize` (fraction of canvas
+    /// width ≈ fraction of screen width).
+    private func bubbleFrame(on screen: NSScreen) -> NSRect {
+        let v = screen.frame
+        let side = max(90, min(700, pipSize * v.width))
+        let centerX = v.minX + pipPosition.x * v.width
+        // pipPosition.y is top-left normalized; AppKit y grows upward.
+        let centerY = v.minY + (1 - pipPosition.y) * v.height
+        return NSRect(x: centerX - side / 2, y: centerY - side / 2,
+                      width: side, height: side)
+    }
+
+    /// True while we're applying a bubble-driven change to the model — used to
+    /// break the bubble→model→bubble feedback loop in `pushPIP`.
+    private var isSyncingFromBubble = false
+
+    /// Map the bubble's on-screen WINDOW frame back to `pipPosition` / `pipSize`.
+    /// The camera circle is the BOTTOM square of the window (the optional control
+    /// header sits on top), so derive the circle from `frame.width` + bottom edge.
+    private func updatePip(from frame: NSRect, on screen: NSScreen) {
+        let v = screen.frame
+        guard v.width > 0, v.height > 0 else { return }
+        let side = frame.width
+        let cx = frame.minX + side / 2
+        let cy = frame.minY + side / 2               // circle center (bottom square)
+        let nx = (cx - v.minX) / v.width
+        let ny = 1 - (cy - v.minY) / v.height        // back to top-left normalized
+        let nsize = side / v.width
+        isSyncingFromBubble = true
+        pipPosition = CGPoint(x: min(max(nx, 0), 1), y: min(max(ny, 0), 1))
+        pipSize = min(max(nsize, 0.04), 1)
+        isSyncingFromBubble = false
+    }
+
+    /// Create + show the floating bubble BEFORE the pipeline starts (so its
+    /// window exists and can be excluded from the recording's SCStream). The
+    /// live camera feed is attached later via `floatingCam?.attach(session:)`
+    /// once `pipe.start()` has the camera running.
+    private func prepareFloatingCamera() {
+        guard floatingCamEligible,
+              let screen = selectedScreen.flatMap({ nsScreen(for: $0) }) else {
+            PerfLog.log("FLOATCAM: skipped (eligible=\(floatingCamEligible) format=\(outputFormat.rawValue) layout=\(layout.rawValue) cam=\(selectedCamera != nil))")
+            return
+        }
+        let panel = FloatingCameraPanel(initialFrame: bubbleFrame(on: screen))
+        panel.applyFromModel(frame: bubbleFrame(on: screen), shape: pipShape,
+                             border: pipBorder, mirror: faceCamMirror)
+        panel.onFrameChange = { [weak self] f in
+            self?.updatePip(from: f, on: screen)
+        }
+        // Loom controls (live during recording).
+        panel.onSizePreset = { [weak self] fraction in self?.pipSize = fraction }
+        panel.onToggleShape = { [weak self] in
+            guard let self else { return }
+            self.pipShape = (self.pipShape == .circle) ? .roundedRect : .circle
+        }
+        panel.onToggleMirror = { [weak self] in self?.faceCamMirror.toggle() }
+        panel.orderFrontRegardless()
+        floatingCam = panel
+        PerfLog.log("FLOATCAM: prepared frame=\(Int(panel.frame.width))x\(Int(panel.frame.height)) at (\(Int(panel.frame.minX)),\(Int(panel.frame.minY))) win=\(panel.windowNumber) on screen \(Int(screen.frame.width))x\(Int(screen.frame.height))")
+    }
+
+    private func hideFloatingCamera() {
+        // Release the camera session from the bubble's preview layer FIRST so the
+        // device is fully free for the preview restore / next recording (otherwise
+        // the camera can "disappear" on the second recording).
+        floatingCam?.detach()
+        floatingCam?.orderOut(nil)
+        floatingCam?.close()
+        floatingCam = nil
+    }
+
     private func startRecording() async {
         guard let screen = selectedScreen else {
             state = .failed("No screen source selected"); return
@@ -430,6 +706,10 @@ public final class AppModel: ObservableObject {
         // needs it.
         stopContinuityWakeSession()
         micMonitor.stop()
+        // Create the floating bubble NOW (before the pipeline builds its SCStream
+        // filter) so its window can be excluded from the recording while still
+        // appearing in normal macOS screenshots.
+        prepareFloatingCamera()
         let outURL = defaultOutputURL()
         do {
             let pipe = try CapturePipeline(
@@ -456,18 +736,40 @@ public final class AppModel: ObservableObject {
             // Saves ~10 CGImage builds/s + main actor hops + SwiftUI
             // re-renders during recording.
             let perfMode = performanceMode
-            pipe.onComposedFrame = { [weak self] buffer in
+            // Only flip to composed frames once the camera is actually in the
+            // frame (or there's no camera) — otherwise the FIRST recording can
+            // briefly show a camera-less composite (black pip) during the cold
+            // camera warm-up → "the camera disappears the first time".
+            let camExpected = selectedCamera != nil && layout.usesCamera
+            pipe.onComposedFrame = { [weak self] buffer, hadCamera in
                 if !perfMode {
                     self?.livePreview.push(buffer)
                 }
+                guard !camExpected || hadCamera else { return }
                 Task { @MainActor in
                     guard let self, !self.composedFrameActive else { return }
+                    // Only flip while actually recording — a late composed frame
+                    // arriving during stop (state == .finishing) must NOT re-enable
+                    // composed mode, or the preview stays frozen on the last frame
+                    // and the live camera "disappears".
+                    guard case .recording = self.state else { return }
                     self.composedFrameActive = true
                 }
             }
-            try await pipe.start()
-            await livePreview.stop()
+            // Sync background-removal state into the pipeline BEFORE it starts
+            // compositing. Otherwise the first frames render with removal OFF
+            // (bgRemovalEnabled defaults to false) → the raw camera WITH its
+            // background flashes at the start of every transparent recording.
             pipeline = pipe
+            // Exclude the floating bubble's window from THIS recording only.
+            if let win = floatingCam?.windowNumber, win > 0 {
+                pipe.excludedWindowID = CGWindowID(win)
+            }
+            pushBackground()
+            try await pipe.start()
+            // Now the camera session is live → feed the bubble's preview layer.
+            floatingCam?.attach(session: pipe.cameraCaptureSession)
+            await livePreview.stop()
             recordingStart = Date()
             elapsed = 0
             timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -478,6 +780,7 @@ public final class AppModel: ObservableObject {
             }
             state = .recording
         } catch {
+            hideFloatingCamera()
             applyPreviewCamera(selectedCamera)
             applyMicMonitor()
             state = .failed(Self.humanize(error))
@@ -539,28 +842,42 @@ public final class AppModel: ObservableObject {
         state = .finishing
         timer?.invalidate(); timer = nil
         recordingStart = nil
+        // Stop callbacks BEFORE clearing the flag so a late composed frame can't
+        // re-enable composed mode (which froze the preview on the last frame).
+        pipeline?.onComposedFrame = nil
         composedFrameActive = false
+        hideFloatingCamera()
+
+        // Finalize the recording, capturing the result/error WITHOUT letting it
+        // skip the camera-restore below. Previously a throw from stop() jumped
+        // straight to the catch and, if anything there also threw, the camera
+        // was never handed back → "the camera disappeared and nothing saved".
+        var savedURL: URL?
+        var stopError: String?
         do {
-            let url = try await pipeline?.stop()
-            pipeline = nil
-            applyPreviewCamera(selectedCamera)
-            // Bump after the camera is handed back from the pipeline
-            // session to the preview session — SwiftUI rebuilds the
-            // camera NSView so AVCaptureVideoPreviewLayer re-engages
-            // with the (now-restored) preview session. Without this,
-            // the camera slot stays black after the recording ends.
-            previewSessionGeneration &+= 1
-            if let s = selectedScreen { await livePreview.start(for: s) }
-            applyMicMonitor()
-            updateContinuityPolling()
-            if let url { state = .done(url) } else { state = .idle }
+            savedURL = try await pipeline?.stop()
         } catch {
-            applyPreviewCamera(selectedCamera)
-            previewSessionGeneration &+= 1
-            if let s = selectedScreen { await livePreview.start(for: s) }
-            applyMicMonitor()
-            updateContinuityPolling()
-            state = .failed(error.localizedDescription)
+            stopError = error.localizedDescription
+            PerfLog.log("STOP: recorder.stop() failed: \(error.localizedDescription)")
+        }
+        pipeline = nil
+
+        // ALWAYS hand the camera back to the preview session, regardless of how
+        // finalization went. Bump the generation after so SwiftUI rebuilds the
+        // camera NSView and AVCaptureVideoPreviewLayer re-engages with the
+        // restored preview session (otherwise the slot stays black).
+        applyPreviewCamera(selectedCamera)
+        previewSessionGeneration &+= 1
+        if let s = selectedScreen { await livePreview.start(for: s) }
+        applyMicMonitor()
+        updateContinuityPolling()
+
+        if let savedURL {
+            state = .done(savedURL)
+        } else if let stopError {
+            state = .failed(stopError)
+        } else {
+            state = .idle
         }
     }
 
@@ -590,9 +907,82 @@ public final class AppModel: ObservableObject {
     public var isCustomPosition: Bool {
         !CornerPreset.allCases.contains(where: { matchesCorner($0) })
     }
-    private func pushPIP() {
+    func pushPIP() {
         pipeline?.updatePIP(position: pipPosition, size: pipSize,
-                            shape: pipShape, border: pipBorder)
+                            shape: pipShape, border: pipBorder, mirror: faceCamMirror)
+        // Keep the floating bubble in sync with the model (slider / S-M-L / shape
+        // changes move + reshape the bubble live), unless the change ORIGINATED
+        // from the bubble itself (guard against the feedback loop).
+        syncFloatingCamFromModel()
+        // Shape feeds the preview effect; re-derive the full background params.
+        pushBackground()
+    }
+
+    /// Push the model's pip frame/shape/border/mirror onto the live bubble.
+    private func syncFloatingCamFromModel() {
+        guard !isSyncingFromBubble, let panel = floatingCam,
+              let screen = selectedScreen.flatMap({ nsScreen(for: $0) }) else { return }
+        panel.applyFromModel(frame: bubbleFrame(on: screen), shape: pipShape,
+                             border: pipBorder, mirror: faceCamMirror)
+    }
+    // Cached background image buffer (avoids reloading the file every frame).
+    private var cachedBgImageBuffer: CVPixelBuffer?
+    private var cachedBgImagePath: String?
+    private func bgImageBuffer() -> CVPixelBuffer? {
+        guard let url = faceCamBgImageURL else { return nil }
+        if cachedBgImagePath == url.path, let b = cachedBgImageBuffer { return b }
+        let buf = BgImageLoader.pixelBuffer(from: url)
+        cachedBgImageBuffer = buf
+        cachedBgImagePath = buf != nil ? url.path : nil
+        return buf
+    }
+
+    /// Compute the EFFECTIVE background params for the current layout and push
+    /// them to the pipeline + preview renderer. pipOverlay uses the
+    /// transparent/color machinery; split/camera-only uses faceCamBgMode
+    /// (none/blur/color/image).
+    private func pushBackground() {
+        var removal = false
+        var bgMode = 0          // 0=transparent 1=color 2=blur 3=image
+        var freeform = faceCamFreeform
+        var blur: CGFloat = 0
+        var image: CVPixelBuffer?
+        var split = false
+
+        if splitBgActive {
+            removal = true
+            freeform = false
+            split = true
+            switch faceCamBgMode {
+            case .blur:  bgMode = 2; blur = faceCamBlurRadius
+            case .color: bgMode = 1
+            case .image: bgMode = 3; image = bgImageBuffer()
+            case .none:  removal = false
+            }
+        } else if outputFormat != .youtube && layout == .pipOverlay && removeBackground {
+            removal = true
+            freeform = faceCamFreeform
+            bgMode = faceCamBgTransparent ? 0 : 1
+        }
+
+        pipeline?.updateBackground(removal: removal, bgMode: bgMode, freeform: freeform,
+                                   color: faceCamBgColor, blurRadius: blur, image: image)
+        previewEffectRenderer.updateParams(shape: pipShape, freeform: freeform, bgMode: bgMode,
+                                           color: faceCamBgColor, blurRadius: blur,
+                                           image: image, split: split)
+    }
+
+    /// True when background removal is live for the face cam — Reel/Post only,
+    /// in the pipOverlay layout (camera floating over the full-screen
+    /// recording). Drives whether the preview shows the segmented effect.
+    public var backgroundRemovalActive: Bool {
+        (outputFormat != .youtube && layout == .pipOverlay && removeBackground) || splitBgActive
+    }
+
+    /// True for the transparent free-silhouette mode (no shape clip) — the
+    /// camera slot uses native aspect and can sit flush to the edges.
+    public var faceCamBottomAnchored: Bool {
+        backgroundRemovalActive && faceCamBgTransparent
     }
 
     public func t(_ key: LKey) -> String { L10n.t(key, in: language) }
@@ -660,7 +1050,8 @@ public final class AppModel: ObservableObject {
         static let performanceMode   = "performanceMode"
         static let countdownEnabled  = "countdownEnabled"
         static let rememberFaceCam   = "rememberFaceCam"
-        static let faceCam           = "faceCamSettings"
+        static let faceCam           = "faceCamSettings"          // legacy (global)
+        static let faceCamByFormat   = "faceCamSettingsByFormat"  // per-format
         static let format            = "outputFormat"
         static let layout            = "layout"
         static let screenAnchor      = "screenAnchor"
@@ -672,7 +1063,7 @@ public final class AppModel: ObservableObject {
         static let iPhoneDisconnectFlag  = "iPhoneRecentlyDisconnected"
     }
 
-    private static func loadFormat() -> OutputFormat {
+    static func loadFormat() -> OutputFormat {
         if let raw = UserDefaults.standard.string(forKey: Keys.format),
            let f = OutputFormat(rawValue: raw) { return f }
         return .youtube

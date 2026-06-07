@@ -380,41 +380,85 @@ extension AppModel {
             previewSession.removeInput(existing)
             previewInput = nil
         }
-        if let device, let input = try? AVCaptureDeviceInput(device: device),
-           previewSession.canAddInput(input) {
-            previewSession.addInput(input)
-            previewInput = input
+        if let device {
+            do {
+                let input = try AVCaptureDeviceInput(device: device)
+                if previewSession.canAddInput(input) {
+                    previewSession.addInput(input)
+                    previewInput = input
+                    // External cams (iPhone Continuity) ignore the preset and
+                    // ship huge frames → cap the LIVE PREVIEW to ~720p so it
+                    // stays smooth (no lag). Recording re-raises it to 1080p.
+                    CameraFormatCap.apply(to: device, maxWidth: 1280)
+                } else {
+                    PerfLog.log("CAM-RESTORE: canAddInput=false for \(device.localizedName)")
+                }
+            } catch {
+                PerfLog.log("CAM-RESTORE: AVCaptureDeviceInput threw: \(error.localizedDescription)")
+            }
         }
         previewSession.commitConfiguration()
+        PerfLog.log("CAM-RESTORE: immediate bound=\(previewInput != nil) running=\(previewSession.isRunning) device=\(device?.localizedName ?? "nil")")
         if previewInput != nil, !previewSession.isRunning {
             let session = previewSession
-            DispatchQueue.global(qos: .userInitiated).async { session.startRunning() }
+            DispatchQueue.global(qos: .userInitiated).async {
+                session.startRunning()
+                // Attach the background-removal data output ONLY after the
+                // session is actually running, else the delegate gets no frames
+                // (the "transparent only works after toggling Color" race).
+                DispatchQueue.main.async { [weak self] in self?.updatePreviewEffectPipeline() }
+            }
         } else if previewInput == nil, previewSession.isRunning {
             previewSession.stopRunning()
+        } else {
+            // Already running (e.g. swapping the camera while live) — re-assert
+            // the effect pipeline so it re-wires for the new input.
+            updatePreviewEffectPipeline()
         }
 
         // Resilience: if we wanted a device but couldn't bind it (input
-        // creation/add failed — usually the device is still releasing
-        // from the recording pipeline's camSession right after a stop),
-        // retry once after a short delay. Without this the camera slot
-        // stays black until the user manually toggles something.
+        // creation/add failed — usually the device is still releasing from the
+        // recording pipeline's camSession right after a stop), retry a few times
+        // with backoff. Device cleanup can take 0.5–1s on some Macs, so a single
+        // 0.25s retry wasn't enough → the camera slot stayed black after stop.
         if let device, previewInput == nil {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                guard let self, self.previewInput == nil,
-                      self.selectedCamera?.uniqueID == device.uniqueID else { return }
-                self.previewSession.beginConfiguration()
-                if let input = try? AVCaptureDeviceInput(device: device),
-                   self.previewSession.canAddInput(input) {
+            retryBindPreviewCamera(device, attempt: 1)
+        }
+    }
+
+    /// Retry binding the preview camera every 0.4s for up to ~6s. The recording
+    /// session can keep the device "in use" for a while after stop, so we keep
+    /// trying until it's free, then start the session + rebuild the NSView.
+    private func retryBindPreviewCamera(_ device: AVCaptureDevice, attempt: Int) {
+        let maxAttempts = 15   // ~6s total at 0.4s spacing
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self else { return }
+            // Stop retrying if the camera already came back or the user switched.
+            guard self.previewInput == nil,
+                  self.selectedCamera?.uniqueID == device.uniqueID else { return }
+            self.previewSession.beginConfiguration()
+            var lastError: String?
+            do {
+                let input = try AVCaptureDeviceInput(device: device)
+                if self.previewSession.canAddInput(input) {
                     self.previewSession.addInput(input)
                     self.previewInput = input
-                }
-                self.previewSession.commitConfiguration()
-                if self.previewInput != nil, !self.previewSession.isRunning {
+                    CameraFormatCap.apply(to: device, maxWidth: 1280)
+                } else { lastError = "canAddInput=false" }
+            } catch { lastError = error.localizedDescription }
+            self.previewSession.commitConfiguration()
+            if self.previewInput != nil {
+                if !self.previewSession.isRunning {
                     let session = self.previewSession
                     DispatchQueue.global(qos: .userInitiated).async { session.startRunning() }
                 }
-                // Force the preview NSView to re-engage with the now-bound session.
                 self.previewSessionGeneration &+= 1
+                self.updatePreviewEffectPipeline()
+                PerfLog.log("CAM-RESTORE: bound on retry #\(attempt)")
+            } else if attempt < maxAttempts {
+                self.retryBindPreviewCamera(device, attempt: attempt + 1)
+            } else {
+                PerfLog.log("⚠️ CAM-RESTORE: still unavailable after \(maxAttempts) retries (last: \(lastError ?? "?"))")
             }
         }
     }

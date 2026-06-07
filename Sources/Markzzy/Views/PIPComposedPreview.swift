@@ -59,7 +59,19 @@ struct PIPComposedPreview: View {
                 // SwiftUI rebuilds the NSView so AVCaptureVideoPreviewLayer
                 // re-engages with the freshly restored session. Without
                 // this, the camera slot stays black after the first stop.
-                cameraView(frame: c)
+                // Clipped to the canvas so a cutout that overflows an edge/corner
+                // (or rises tall from the bottom) is trimmed exactly like the
+                // recording, instead of spilling over the gray area. The camera
+                // is positioned RELATIVE to this canvas-sized container.
+                Color.clear
+                    .frame(width: canvas.width, height: canvas.height)
+                    .overlay(alignment: .topLeading) {
+                        cameraView(frame: CGRect(x: c.minX - origin.x,
+                                                 y: c.minY - origin.y,
+                                                 width: c.width, height: c.height))
+                    }
+                    .clipped()
+                    .offset(x: origin.x, y: origin.y)
                     .id(model.previewSessionGeneration)
                     .opacity((!model.composedFrameActive && model.layout.usesCamera) ? 1 : 0)
                     // Drag DESDE la cámara: el NSView de la cámara
@@ -103,13 +115,17 @@ struct PIPComposedPreview: View {
             .onChanged { value in
                 let nx = (value.location.x - origin.x) / canvas.width
                 let ny = (value.location.y - origin.y) / canvas.height
-                // Drag libre — sin snap. Las esquinas siguen
-                // accesibles vía los botones cornerButton.
-                model.pipPosition = CGPoint(x: clamp(nx), y: clamp(ny))
+                // Drag libre — sin snap. Las esquinas siguen accesibles vía los
+                // botones cornerButton. Transparente puede llegar a los bordes.
+                let edges = model.faceCamBottomAnchored
+                model.pipPosition = CGPoint(x: clamp(nx, edges: edges),
+                                            y: clamp(ny, edges: edges))
             }
     }
 
-    private func clamp(_ v: CGFloat) -> CGFloat { min(max(v, 0.05), 0.95) }
+    private func clamp(_ v: CGFloat, edges: Bool = false) -> CGFloat {
+        edges ? min(max(v, 0.0), 1.0) : min(max(v, 0.05), 0.95)
+    }
     private func snap(_ v: CGFloat, anchors: [CGFloat], threshold: CGFloat) -> CGFloat {
         for a in anchors where abs(v - a) < threshold { return a }
         return v
@@ -186,16 +202,49 @@ struct PIPComposedPreview: View {
 
         ZStack {
             if model.selectedCamera != nil {
-                CameraPreview(session: model.previewSession)
-                    .compositingGroup()
-                    .mask(cameraMask)
-                if isOverlay, !model.pipShape.usesSoftMask, model.pipBorder.style != .none {
-                    ShapedBorderOverlay(
-                        shape: model.pipShape,
-                        border: model.pipBorder,
-                        side: min(c.width, c.height)
-                    )
-                    .frame(width: c.width, height: c.height)
+                if model.backgroundRemovalActive, !model.composedFrameActive {
+                    // Background-removal mode. Show the composited effect once
+                    // ready; while Vision warms up show the raw camera WITHOUT a
+                    // shape mask or border (no cyan-circle flash).
+                    if let effect = model.faceCamEffectImage {
+                        // Freeform silhouette: aspect-FIT so the whole camera
+                        // frame (head included) always shows — the transparent
+                        // letterbox margin is invisible, so the head is never
+                        // cropped. Shaped (color) PIP keeps .fill.
+                        Image(decorative: effect, scale: 1)
+                            .resizable()
+                            .aspectRatio(contentMode: model.faceCamBottomAnchored ? .fit : .fill)
+                            .frame(width: c.width, height: c.height)
+                            .clipped()
+                    } else {
+                        // Matte still warming up (~0.3s). Show nothing (clear)
+                        // rather than the raw camera — no cyan-circle flash; the
+                        // screen behind shows through (transparent intent).
+                        Color.clear
+                            .frame(width: c.width, height: c.height)
+                    }
+                } else {
+                    // Soft-edge needs a gradient MASK. All other shapes use
+                    // `.clipShape` (derived from the view's own geometry) instead
+                    // of a separate `.mask` view — the separate mask lagged the
+                    // live camera NSView during a size drag, flashing a translucent
+                    // sliver at the top of the circle.
+                    if model.pipShape.usesSoftMask {
+                        CameraPreview(session: model.previewSession)
+                            .compositingGroup()
+                            .mask(cameraMask)
+                    } else {
+                        CameraPreview(session: model.previewSession)
+                            .clipShape(model.pipShape.anyShape())
+                    }
+                    if isOverlay, !model.pipShape.usesSoftMask, model.pipBorder.style != .none {
+                        ShapedBorderOverlay(
+                            shape: model.pipShape,
+                            border: model.pipBorder,
+                            side: min(c.width, c.height)
+                        )
+                        .frame(width: c.width, height: c.height)
+                    }
                 }
             } else if model.isWaitingForIPhone {
                 Color.black.overlay(
@@ -297,16 +346,46 @@ struct PIPComposedPreview: View {
 
     private func pipRect(canvas: CGSize, origin: CGPoint) -> CGRect {
         let pipW = canvas.width * model.pipSize
-        let pipH: CGFloat = model.pipShape == .rectangle ? pipW / cameraAspect() : pipW
-        let pad: CGFloat = (model.pipBorder.cgColor != nil) ? model.pipBorder.lineWidth : 4
+        // Freeform silhouette uses the FULL camera frame at native aspect — the
+        // size is slider-controlled and constant, never derived from the
+        // person's pose (so it never grows/shrinks when they move their hands).
+        let freeform = model.faceCamBottomAnchored
+        let pipH: CGFloat
+        if freeform {
+            // Native aspect, NO height cap → matches the recording shader exactly.
+            pipH = pipW / cameraAspect()
+        } else if model.pipShape == .rectangle {
+            pipH = pipW / cameraAspect()
+        } else {
+            pipH = pipW
+        }
         let rawX = origin.x + model.pipPosition.x * canvas.width
         let rawY = origin.y + model.pipPosition.y * canvas.height
-        let minX = origin.x + pipW / 2 + pad
-        let maxX = origin.x + canvas.width  - pipW / 2 - pad
-        let minY = origin.y + pipH / 2 + pad
-        let maxY = origin.y + canvas.height - pipH / 2 - pad
-        let cX = min(max(rawX, minX), maxX)
-        let cY = min(max(rawY, minY), maxY)
+        let cX: CGFloat
+        let cY: CGFloat
+        if freeform {
+            // Head-safe: the TOP edge never leaves the canvas (centre ≥ pipH/2),
+            // so the head can't be cut off. The bottom and sides MAY overflow so
+            // the cutout can hug/exit any edge or corner and a tall "standing
+            // person" can rise from the bottom. The canvas clips the overflow,
+            // exactly like the recording path.
+            let overX = pipW * 0.45
+            let overY = pipH * 0.45
+            let loX = origin.x + pipW / 2 - overX
+            let hiX = origin.x + canvas.width - pipW / 2 + overX
+            let loY = origin.y + pipH / 2
+            let hiY = origin.y + canvas.height - pipH / 2 + overY
+            cX = min(max(rawX, loX), hiX)
+            cY = min(max(rawY, loY), hiY)
+        } else {
+            let pad: CGFloat = (model.pipBorder.cgColor != nil) ? model.pipBorder.lineWidth : 4
+            let minX = origin.x + pipW / 2 + pad
+            let maxX = origin.x + canvas.width  - pipW / 2 - pad
+            let minY = origin.y + pipH / 2 + pad
+            let maxY = origin.y + canvas.height - pipH / 2 - pad
+            cX = min(max(rawX, minX), maxX)
+            cY = min(max(rawY, minY), maxY)
+        }
         return CGRect(x: cX - pipW / 2, y: cY - pipH / 2, width: pipW, height: pipH)
     }
 
@@ -339,7 +418,14 @@ struct PIPComposedPreview: View {
         return 16.0 / 10.0
     }
 
-    private func cameraAspect() -> CGFloat { 4.0 / 3.0 }
+    /// REAL camera aspect (W/H), emitted by the live effect renderer. The old
+    /// hardcoded 4:3 made the preview slot size differently from the recording
+    /// (which uses the true camera dimensions) → preview ≠ recording. Falls back
+    /// to 4:3 only until the first effect frame sets the real value.
+    private func cameraAspect() -> CGFloat {
+        let a = model.faceCamEffectAspect
+        return a > 0.05 ? a : (4.0 / 3.0)
+    }
 
     private func fitted(aspect: CGFloat, in container: CGSize) -> CGSize {
         let ca = container.width / container.height
@@ -604,7 +690,8 @@ private struct ShapedBorderOverlay: View {
 
     var body: some View {
         if let color = border.swiftUIColor {
-            content(color: color, width: border.lineWidth, side: side)
+            // Proportional to the slot diameter so it matches the recording.
+            content(color: color, width: border.strokeWidth(forDiameter: side), side: side)
         }
     }
 
@@ -626,15 +713,11 @@ private struct ShapedBorderOverlay: View {
                 lineWidth: w
             )
         case .chrome:
+            let chrome = PIPBorder.chromePalette.map { Color(cgColor: $0) }
+            let locs: [CGFloat] = [0, 0.25, 0.5, 0.75, 1]
             shape.anyShape().stroke(
                 LinearGradient(
-                    stops: [
-                        .init(color: .white, location: 0),
-                        .init(color: Color(white: 0.88), location: 0.3),
-                        .init(color: Color(white: 0.45), location: 0.5),
-                        .init(color: Color(white: 0.88), location: 0.7),
-                        .init(color: .white, location: 1),
-                    ],
+                    stops: zip(chrome, locs).map { .init(color: $0, location: $1) },
                     startPoint: .top, endPoint: .bottom
                 ),
                 lineWidth: w

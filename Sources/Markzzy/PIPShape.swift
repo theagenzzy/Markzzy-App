@@ -200,12 +200,19 @@ public struct PIPBorder: Equatable {
 
     /// Metallic chrome palette for `.chrome` — highlight/mid/shadow/mid/highlight
     /// linear gradient that creates a realistic silver ring.
+    // NOTE: RGB (not `CGColor(gray:)`) on purpose — `CGGradient(colorsSpace:
+    // DeviceRGB, ...)` returns nil if the colors are in the gray color space,
+    // which made the chrome ring silently invisible in the CIImage/Metal paths.
+    // Higher-contrast metallic so the ring reads as chrome AND stays visible on
+    // BOTH light and dark backgrounds (the old near-white palette vanished over
+    // bright content). A bright highlight, light silver, dark steel core, silver,
+    // highlight — the dark core anchors it on white backgrounds.
     public static let chromePalette: [CGColor] = [
-        CGColor(gray: 1.0,  alpha: 1),   // top highlight
-        CGColor(gray: 0.88, alpha: 1),   // light silver
-        CGColor(gray: 0.45, alpha: 1),   // mid shadow
-        CGColor(gray: 0.88, alpha: 1),   // light silver
-        CGColor(gray: 1.0,  alpha: 1),   // bottom highlight
+        CGColor(red: 0.97, green: 0.97, blue: 1.0,  alpha: 1),   // top highlight
+        CGColor(red: 0.62, green: 0.64, blue: 0.70, alpha: 1),   // silver
+        CGColor(red: 0.24, green: 0.26, blue: 0.32, alpha: 1),   // dark steel core
+        CGColor(red: 0.62, green: 0.64, blue: 0.70, alpha: 1),   // silver
+        CGColor(red: 0.97, green: 0.97, blue: 1.0,  alpha: 1),   // bottom highlight
     ]
 
     // Back-compat presets (used in unit tests).
@@ -217,6 +224,16 @@ public struct PIPBorder: Equatable {
     /// Non-nil CGColor only when the border actually draws something.
     public var cgColor: CGColor? { style == .none ? nil : color }
     public var lineWidth: CGFloat { width }
+
+    /// Stroke width PROPORTIONAL to the ring diameter, so the border looks the
+    /// same thickness in the small preview, the floating bubble AND the (much
+    /// larger) recording canvas. `width` (slider 1…8) is treated as a percent of
+    /// the diameter. Without this, an absolute 2px width vanished on the ~480px
+    /// recording pip ("the metallic border doesn't appear when recording").
+    public func strokeWidth(forDiameter d: CGFloat) -> CGFloat {
+        guard style != .none, d > 0 else { return 0 }
+        return max(1.5, width * 0.01 * d)
+    }
 
     public var swiftUIColor: Color? {
         style == .none ? nil : Color(cgColor: color)

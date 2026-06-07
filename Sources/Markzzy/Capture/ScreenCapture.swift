@@ -58,12 +58,27 @@ public enum ScreenCapture {
                                   output: SCStreamOutput,
                                   queue: DispatchQueue,
                                   canvasSize: CGSize? = nil,
-                                  fps: Int = 24) throws -> SCStream {
+                                  fps: Int = 24,
+                                  excludeWindowID: CGWindowID? = nil) async throws -> SCStream {
         guard let display = source.display else {
             throw NSError(domain: "Markzzy.ScreenCapture", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "Only display sources supported in MVP"])
         }
-        let filter = SCContentFilter(display: display, excludingWindows: [])
+        // Exclude the floating camera bubble from OUR recording only (so it's
+        // never duplicated in the file), while keeping it visible to normal
+        // macOS screenshots — that's why we use SCContentFilter exclusion here
+        // instead of NSWindow.sharingType = .none (which hides it everywhere).
+        var excluded: [SCWindow] = []
+        if let id = excludeWindowID {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            if let w = content.windows.first(where: { $0.windowID == id }) {
+                excluded = [w]
+                PerfLog.log("CAPTURE: excluding floating-cam window \(id) from recording")
+            } else {
+                PerfLog.log("CAPTURE: ⚠️ floating-cam window \(id) NOT found to exclude")
+            }
+        }
+        let filter = SCContentFilter(display: display, excludingWindows: excluded)
         let config = SCStreamConfiguration()
         // Cap at min(source, canvas) so we NEVER ask SCStream to
         // upscale at the OS level — that's wasted WindowServer

@@ -55,11 +55,22 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
 
     private var scStream: SCStream?
     private let camSession = AVCaptureSession()
+    /// The live camera capture session used while recording. Exposed so the
+    /// Loom-style floating camera bubble can attach its own preview layer to the
+    /// SAME feed (multiple `AVCaptureVideoPreviewLayer`s on one session are
+    /// allowed). Only meaningful after `start()` has wired the camera input.
+    public var cameraCaptureSession: AVCaptureSession { camSession }
     private let camOut = AVCaptureVideoDataOutput()
     private let audioOut = AVCaptureAudioDataOutput()
     private var currentCamBuffer: CVPixelBuffer?
     private var camBufferLock = NSLock()
     private var camFrameCount: Int = 0
+
+    // Background removal (person segmentation). The segmenter is created lazily
+    // when removal is first enabled; the mask is pulled in tickCompose().
+    private var segmenter: PersonSegmenter?
+    private var bgRemovalEnabled = false
+    private let bgLock = NSLock()
 
     // ---- OBS-style fixed-rate compose clock ----
     // ScreenCaptureKit only delivers a frame when the screen content
@@ -96,14 +107,21 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
     private var camDelegate: CamDelegate?
     private var audioDelegate: AudioDelegate?
 
-    /// Invoked on each composited output frame (recording resolution). Throttle downstream.
-    public var onComposedFrame: ((CVPixelBuffer) -> Void)?
+    /// Invoked on each composited output frame (recording resolution). Throttle
+    /// downstream. The Bool is true when this frame already contained a camera
+    /// buffer — used so the preview only flips to composed frames once the
+    /// camera is actually present (no black gap on the first recording).
+    public var onComposedFrame: ((CVPixelBuffer, Bool) -> Void)?
 
     /// Performance Mode: when true, the pipeline applies aggressive
     /// resource caps — camera locked at 10 fps (vs 15), live preview
     /// frozen during recording (caller skips onComposedFrame). Trade-off
     /// for users on entry-level hardware.
     public let performanceMode: Bool
+
+    /// CGWindowID of the floating camera bubble to exclude from THIS recording's
+    /// SCStream (so it isn't duplicated in the file). Set before `start()`.
+    public var excludedWindowID: CGWindowID?
 
     public init(screen: ScreenSource,
                 camera: AVCaptureDevice?,
@@ -198,9 +216,10 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
         // screen motion (scrolling code, video) is as smooth as the
         // camera. Static screens still cost nothing (SCStream only
         // sends on change; the clock reuses the last buffer).
-        let stream = try ScreenCapture.makeStream(for: source, output: handler,
-                                                  queue: queue, canvasSize: canvasSize,
-                                                  fps: targetComposeFps)
+        let stream = try await ScreenCapture.makeStream(for: source, output: handler,
+                                                        queue: queue, canvasSize: canvasSize,
+                                                        fps: targetComposeFps,
+                                                        excludeWindowID: excludedWindowID)
         self.scStream = stream
         try await stream.startCapture()
 
@@ -214,6 +233,13 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
         stopComposeClock()
         if let s = scStream { try? await s.stopCapture() }
         camSession.stopRunning()
+        // Fully RELEASE the camera device: stopRunning() alone leaves the input
+        // attached, so the AVCaptureDevice stays "in use" and the preview session
+        // can't rebind it right after → the camera slot goes black and never
+        // comes back. Removing the inputs hands the device back immediately.
+        camSession.beginConfiguration()
+        for input in camSession.inputs { camSession.removeInput(input) }
+        camSession.commitConfiguration()
         return try await recorder.stop()
     }
 
@@ -222,9 +248,26 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
     public var isPaused: Bool { recorder.isPaused }
 
     public func updatePIP(position: CGPoint, size: CGFloat,
-                          shape: PIPShape, border: PIPBorder) {
-        compositor.update(position: position, size: size, shape: shape, border: border)
-        metalCompositor?.update(position: position, size: size, shape: shape, border: border)
+                          shape: PIPShape, border: PIPBorder, mirror: Bool = false) {
+        compositor.update(position: position, size: size, shape: shape, border: border, mirror: mirror)
+        metalCompositor?.update(position: position, size: size, shape: shape, border: border, mirror: mirror)
+    }
+
+    /// Toggle background removal and configure the bg mode (0=transparent,
+    /// 1=color, 2=blur, 3=image) + color/blur/image. Lazily spins up the
+    /// segmenter on first enable. The compositors STORE these and use them in
+    /// render() (so the render signature doesn't change).
+    public func updateBackground(removal: Bool, bgMode: Int, freeform: Bool,
+                                 color: CGColor, blurRadius: CGFloat, image: CVPixelBuffer?) {
+        bgLock.lock()
+        bgRemovalEnabled = removal
+        if removal && segmenter == nil { segmenter = PersonSegmenter() }
+        if !removal { segmenter?.reset() }
+        bgLock.unlock()
+        compositor.updateBackground(removal: removal, bgMode: bgMode, freeform: freeform,
+                                    color: color, blurRadius: blurRadius, image: image)
+        metalCompositor?.updateBackground(removal: removal, bgMode: bgMode, freeform: freeform,
+                                          color: color, blurRadius: blurRadius, image: image)
     }
 
     public var frameCount: Int { recorder.writtenFrames }
@@ -270,8 +313,21 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
         guard let base = screen else { return }  // no screen frame yet
 
         camBufferLock.lock()
-        let overlay = currentCamBuffer
+        var overlay = currentCamBuffer
         camBufferLock.unlock()
+
+        bgLock.lock()
+        let seg = bgRemovalEnabled ? segmenter : nil
+        bgLock.unlock()
+        // Background removal: compose the camera frame PAIRED with its matte (not
+        // the latest live frame) so the two stay aligned → no background flash on
+        // fast motion. Screen + audio remain live; the camera lags ~Δ (33–66ms),
+        // which is imperceptible. Without removal, use the latest camera frame.
+        var segMask: CVPixelBuffer?
+        if let seg, let pair = seg.currentMatte() {
+            overlay = pair.frame
+            segMask = pair.mask
+        }
 
         let cameraActive = (camera != nil) && (layout != .screenOnly)
 
@@ -315,20 +371,21 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
         let anchorCopy = self.screenAnchor
         let onComposed = self.onComposedFrame
         let encoderQ = self.encoderQueue
+        let hadCamera = (overlay != nil)
         composeQueue.async { [weak self] in
             defer { self?.decrementInFlight() }
             let t0 = DispatchTime.now()
             if let metal = metalRef {
-                metal.render(screen: base, camera: overlay, into: outBuffer,
-                             layout: layoutCopy, screenAnchor: anchorCopy)
+                metal.render(screen: base, camera: overlay, mask: segMask,
+                             into: outBuffer, layout: layoutCopy, screenAnchor: anchorCopy)
             } else {
-                compositorRef.render(screen: base, camera: overlay, into: outBuffer,
-                                     layout: layoutCopy, screenAnchor: anchorCopy)
+                compositorRef.render(screen: base, camera: overlay, mask: segMask,
+                                     into: outBuffer, layout: layoutCopy, screenAnchor: anchorCopy)
             }
             self?.recordComposeTiming(t0)
             encoderQ.async {
                 recorderRef.appendVideo(outBuffer, pts: pts)
-                onComposed?(outBuffer)
+                onComposed?(outBuffer, hadCamera)
             }
         }
     }
@@ -374,6 +431,12 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
         self.camDelegate = delegate
         camOut.setSampleBufferDelegate(delegate, queue: camQueue)
         if camSession.canAddOutput(camOut) { camSession.addOutput(camOut) }
+
+        // External cameras (iPhone Continuity) ignore the session preset and
+        // deliver huge frames → cap to ~1080p for recording (high quality, but
+        // not the 4K that would tank compose). Built-in cameras are untouched.
+        // Must run BEFORE the fps lock (setting activeFormat resets frame rate).
+        CameraFormatCap.apply(to: cam, maxWidth: 1920)
 
         // Camera fps: 30 default, 24 in Performance Mode. An earlier
         // 15/10 fps lock made talking-head footage visibly choppy
@@ -429,6 +492,13 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
         currentCamBuffer = pb
         camFrameCount += 1
         camBufferLock.unlock()
+
+        // Feed the segmenter (non-blocking; drops if still busy). Runs on the
+        // segmenter's own queue so camQueue is never stalled.
+        bgLock.lock()
+        let seg = bgRemovalEnabled ? segmenter : nil
+        bgLock.unlock()
+        seg?.submit(pb)
     }
 
     fileprivate func handleAudioSample(_ sample: CMSampleBuffer) {
