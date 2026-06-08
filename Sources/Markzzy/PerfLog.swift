@@ -9,6 +9,15 @@ import Foundation
 enum PerfLog {
     static let path = "/tmp/markzzy-perf.log"
 
+    /// Diagnostics are ON for dev builds (bundle id `dev.`) and OFF in production
+    /// unless the user opts in (`defaults write tech.markzzy.Markzzy
+    /// MARKZZY_DIAGNOSTICS -bool YES`) — so a release build doesn't write device
+    /// names / timing to /tmp by default. Support can ask a user to enable it.
+    private static let enabled: Bool = {
+        if (Bundle.main.bundleIdentifier ?? "").hasPrefix("dev.") { return true }
+        return UserDefaults.standard.bool(forKey: "MARKZZY_DIAGNOSTICS")
+    }()
+
     private static let queue = DispatchQueue(label: "dev.markzzy.perflog")
     private static let df: DateFormatter = {
         let f = DateFormatter()
@@ -18,6 +27,7 @@ enum PerfLog {
 
     /// Truncate + write a header. Call once when a recording starts.
     static func begin(_ header: String) {
+        guard enabled else { return }
         queue.async {
             let line = "=== \(df.string(from: Date())) \(header) ===\n"
             try? line.data(using: .utf8)?.write(to: URL(fileURLWithPath: path))
@@ -25,6 +35,7 @@ enum PerfLog {
     }
 
     static func log(_ message: String) {
+        guard enabled else { return }
         queue.async {
             let line = "\(df.string(from: Date())) \(message)\n"
             guard let data = line.data(using: .utf8) else { return }

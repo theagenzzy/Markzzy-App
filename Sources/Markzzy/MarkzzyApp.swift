@@ -1,12 +1,37 @@
 import SwiftUI
 import AppKit   // NSApplication.didBecomeActiveNotification
 
+/// Finalizes an in-progress recording before the app quits so Cmd+Q (or any
+/// termination) never leaves a corrupt MP4 or a camera device still held.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    weak var model: AppModel?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let model, model.isActivelyRecording else { return .terminateNow }
+        Task { @MainActor in
+            await model.stopRecording()
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        // Safety net: never hang the quit if finalization stalls.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+}
+
 @main
 struct MarkzzyApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
     @StateObject private var license = LicenseManager()
     @StateObject private var updates = UpdateManager()
     @State private var lastHandledToken: String?
+
+    init() {
+        // Install crash/error reporting early + flush any crash from last launch.
+        Telemetry.start()
+    }
 
     var body: some Scene {
         Window(SelfTestRunner.isRequested() ? "Markzzy Self-Test" : "Markzzy", id: "main") {
@@ -36,6 +61,7 @@ struct MarkzzyApp: App {
             // network roundtrip + Sparkle's plist reads (~1-2 s combined
             // on cold launch).
             .task {
+                appDelegate.model = model   // so quit finalizes an active recording
                 license.start()
                 updates.start()
             }

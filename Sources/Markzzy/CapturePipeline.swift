@@ -162,6 +162,7 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
         if metalCompositor == nil {
             print("CapturePipeline: ⚠️ Metal compositor failed to init — falling back to CIImage (5-10× slower per-frame compose)")
             PerfLog.log("COMPOSITOR: ⚠️ Metal FAILED — using CIImage fallback (5-10× slower)")
+            Telemetry.report("metal_fallback")
         } else {
             print("CapturePipeline: ✅ Metal compositor active")
             PerfLog.log("COMPOSITOR: ✅ Metal active")

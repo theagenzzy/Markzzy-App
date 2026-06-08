@@ -223,12 +223,11 @@ struct PIPComposedPreview: View {
                         Color.clear
                             .frame(width: c.width, height: c.height)
                     }
-                } else {
-                    // Soft-edge needs a gradient MASK. All other shapes use
-                    // `.clipShape` (derived from the view's own geometry) instead
-                    // of a separate `.mask` view — the separate mask lagged the
-                    // live camera NSView during a size drag, flashing a translucent
-                    // sliver at the top of the circle.
+                } else if isOverlay {
+                    // Floating PIP (YouTube + Reel/Post pipOverlay): clip to the
+                    // chosen shape. Soft-edge needs a gradient MASK; other shapes
+                    // use `.clipShape` (synced with the view geometry → no resize
+                    // glint, unlike a separate `.mask` view).
                     if model.pipShape.usesSoftMask {
                         CameraPreview(session: model.previewSession)
                             .compositingGroup()
@@ -237,7 +236,7 @@ struct PIPComposedPreview: View {
                         CameraPreview(session: model.previewSession)
                             .clipShape(model.pipShape.anyShape())
                     }
-                    if isOverlay, !model.pipShape.usesSoftMask, model.pipBorder.style != .none {
+                    if !model.pipShape.usesSoftMask, model.pipBorder.style != .none {
                         ShapedBorderOverlay(
                             shape: model.pipShape,
                             border: model.pipBorder,
@@ -245,6 +244,12 @@ struct PIPComposedPreview: View {
                         )
                         .frame(width: c.width, height: c.height)
                     }
+                } else {
+                    // Split / camera-only: the camera FILLS its rectangular slot
+                    // (aspect-fill). NO shape clip — must not be circular here.
+                    CameraPreview(session: model.previewSession)
+                        .frame(width: c.width, height: c.height)
+                        .clipped()
                 }
             } else if model.isWaitingForIPhone {
                 Color.black.overlay(

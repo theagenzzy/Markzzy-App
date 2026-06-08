@@ -15,6 +15,32 @@ extension AppModel {
         return outputDirectory.appendingPathComponent("Markzzy-\(fmt.string(from: Date())).mp4")
     }
 
+    /// Pre-flight before recording: the output folder must exist + be writable
+    /// and there must be a minimum of free disk space. Returns a user-facing
+    /// error message (localized), or nil if everything's OK.
+    func preflightRecording() -> String? {
+        let es = (language == .es)
+        let dir = outputDirectory
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        } catch {
+            return es ? "No se puede escribir en la carpeta de salida. Elige otra en Ajustes."
+                      : "Can't write to the output folder. Pick another in Settings."
+        }
+        guard FileManager.default.isWritableFile(atPath: dir.path) else {
+            return es ? "La carpeta de salida no permite escritura. Elige otra en Ajustes."
+                      : "The output folder isn't writable. Pick another in Settings."
+        }
+        // Purgeable-aware free space on the target volume.
+        if let vals = try? dir.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+           let avail = vals.volumeAvailableCapacityForImportantUsage,
+           avail < 500 * 1024 * 1024 {   // 500 MB minimum headroom
+            return es ? "Poco espacio en disco para grabar. Libera espacio e inténtalo de nuevo."
+                      : "Not enough free disk space to record. Free up space and try again."
+        }
+        return nil
+    }
+
     /// Lists every `.mp4` Markzzy has produced under the current
     /// `outputDirectory`, newest first. Hidden files are skipped.
     /// Returns an empty array on any I/O error (the Library tab handles

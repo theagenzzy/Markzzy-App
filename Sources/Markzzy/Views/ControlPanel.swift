@@ -277,7 +277,7 @@ struct ControlPanel: View {
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
                         HStack(spacing: 6) {
-                            ForEach(nonPipLayouts) { layoutButton($0) }
+                            ForEach(reelLayouts) { layoutButton($0) }
                         }
                         Spacer()
                     }
@@ -303,8 +303,11 @@ struct ControlPanel: View {
         }
     }
 
-    private var nonPipLayouts: [Layout] {
-        [.splitScreenTop, .splitCamTop, .cameraOnly, .screenOnly]
+    /// Layouts offered for Reel/Post. `.pipOverlay` first = the floating round
+    /// face-cam over the full screen (Background Transparent/Color + Shape +
+    /// Size); previously only reachable by carrying the layout over from YouTube.
+    private var reelLayouts: [Layout] {
+        [.pipOverlay, .splitScreenTop, .splitCamTop, .cameraOnly, .screenOnly]
     }
 
     private func formatButton(_ f: OutputFormat) -> some View {

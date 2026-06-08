@@ -50,11 +50,18 @@ public final class LicenseManager: ObservableObject {
     /// for dev convenience: set it once on a dev machine and every rebuild
     /// of the app keeps pointing at localhost.
     private let apiBase: URL = {
+        let prod = URL(string: "https://markzzy.tech")!
+        // SECURITY: the env/UserDefaults override is DEV-ONLY (bundle id prefix
+        // `dev.`). A production build (`tech.markzzy.Markzzy`) ALWAYS uses the
+        // hardcoded production origin, so it can never be redirected to a rogue
+        // server via `defaults write` (which, combined with the unsigned JWT,
+        // would be a license bypass).
+        guard (Bundle.main.bundleIdentifier ?? "").hasPrefix("dev.") else { return prod }
         if let env = ProcessInfo.processInfo.environment["MARKZZY_API_BASE"],
            let url = URL(string: env) { return url }
         if let pref = UserDefaults.standard.string(forKey: "MARKZZY_API_BASE"),
            let url = URL(string: pref) { return url }
-        return URL(string: "https://markzzy.tech")!
+        return prod
     }()
 
     /// Same origin as `apiBase` — use for links to the web dashboard,

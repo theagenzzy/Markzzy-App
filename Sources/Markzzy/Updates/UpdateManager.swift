@@ -21,13 +21,18 @@ final class UpdateManager: NSObject, ObservableObject {
     /// dev.markzzy.app MARKZZY_APPCAST_URL …`) when running the local
     /// update test from `docs/RELEASING.md`.
     static let feedURL: String = {
+        let prod = "https://markzzy.tech/api/releases/appcast.xml"
+        // Override is DEV-ONLY (bundle id prefix `dev.`) so a production build's
+        // update feed can't be redirected via `defaults write`. (Updates are
+        // EdDSA-signed regardless, but this keeps the channel pinned.)
+        guard (Bundle.main.bundleIdentifier ?? "").hasPrefix("dev.") else { return prod }
         if let env = ProcessInfo.processInfo.environment["MARKZZY_APPCAST_URL"], !env.isEmpty {
             return env
         }
         if let pref = UserDefaults.standard.string(forKey: "MARKZZY_APPCAST_URL"), !pref.isEmpty {
             return pref
         }
-        return "https://markzzy.tech/api/releases/appcast.xml"
+        return prod
     }()
 
     @Published private(set) var canCheckForUpdates: Bool = false

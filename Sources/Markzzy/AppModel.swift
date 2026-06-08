@@ -9,6 +9,13 @@ public final class AppModel: ObservableObject {
     public enum State: Equatable { case idle, preparing, recording, paused, finishing, done(URL), failed(String) }
 
     @Published public var state: State = .idle
+
+    /// True while a recording is in progress (recording or paused) — used to
+    /// finalize the file before the app terminates.
+    public var isActivelyRecording: Bool {
+        switch state { case .recording, .paused, .preparing, .finishing: return true; default: return false }
+    }
+
     @Published public var screenSources: [ScreenSource] = []
     @Published public var cameras: [AVCaptureDevice] = []
     @Published public var microphones: [AVCaptureDevice] = []
@@ -689,10 +696,16 @@ public final class AppModel: ObservableObject {
         floatingCam = nil
     }
 
+    /// Output path of the in-progress recording (so a FAILED stop can delete the
+    /// truncated file instead of leaving junk behind).
+    private var currentOutputURL: URL?
+
     private func startRecording() async {
         guard let screen = selectedScreen else {
             state = .failed("No screen source selected"); return
         }
+        // Pre-flight: writable folder + enough disk. Fail fast with a clear msg.
+        if let err = preflightRecording() { state = .failed(err); return }
         state = .preparing
         // Camera preview must stop NOW (camera can only be in one session at a
         // time, and the recording pipeline needs it). But keep `livePreview`
@@ -711,6 +724,7 @@ public final class AppModel: ObservableObject {
         // appearing in normal macOS screenshots.
         prepareFloatingCamera()
         let outURL = defaultOutputURL()
+        currentOutputURL = outURL
         do {
             let pipe = try CapturePipeline(
                 screen: screen,
@@ -783,7 +797,9 @@ public final class AppModel: ObservableObject {
             hideFloatingCamera()
             applyPreviewCamera(selectedCamera)
             applyMicMonitor()
-            state = .failed(Self.humanize(error))
+            let msg = Self.humanize(error)
+            Telemetry.report("recording_start_failed", ["error": Self.cleanFailureMessage(msg)])
+            state = .failed(msg)
         }
     }
 
@@ -859,8 +875,15 @@ public final class AppModel: ObservableObject {
         } catch {
             stopError = error.localizedDescription
             PerfLog.log("STOP: recorder.stop() failed: \(error.localizedDescription)")
+            Telemetry.report("recording_finalize_failed", ["error": error.localizedDescription])
         }
         pipeline = nil
+        // Clean up a truncated/invalid file if finalization failed (disk full,
+        // write error, no frames) so we never leave junk in the user's library.
+        if savedURL == nil, let bad = currentOutputURL {
+            try? FileManager.default.removeItem(at: bad)
+        }
+        currentOutputURL = nil
 
         // ALWAYS hand the camera back to the preview session, regardless of how
         // finalization went. Bump the generation after so SwiftUI rebuilds the
