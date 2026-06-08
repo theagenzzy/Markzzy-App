@@ -41,7 +41,8 @@ public final class MetalCompositor {
     public var bgColor: CGColor = CGColor(red: 0.04, green: 0.52, blue: 1.0, alpha: 1)
     public var bgBlurRadius: CGFloat = 0
     public var bgImage: CVPixelBuffer?
-    private var blurDest: MTLTexture?     // reused MPS blur destination
+    private var blurDest: MTLTexture?     // reused MPS blur destination (camera bg)
+    private var screenBlurDest: MTLTexture?   // reused MPS blur destination (screen Fit bg)
 
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
@@ -121,7 +122,8 @@ public final class MetalCompositor {
                        mask: CVPixelBuffer? = nil,
                        into out: CVPixelBuffer,
                        layout: Layout,
-                       screenAnchor: ScreenAnchor) {
+                       screenAnchor: ScreenAnchor,
+                       screenFit: Bool = false) {
         guard let textureCache else { return }
 
         let outW = CVPixelBufferGetWidth(out)
@@ -239,7 +241,8 @@ public final class MetalCompositor {
             hasBorderTex: hasBorderTex,
             borderTexW: borderTexW,
             borderTexH: borderTexH,
-            borderPad: borderPadPx
+            borderPad: borderPadPx,
+            screenFit: (screenFit && layout.usesScreen) ? 1 : 0
         )
 
         guard let cmdBuf = commandQueue.makeCommandBuffer() else { return }
@@ -261,6 +264,24 @@ public final class MetalCompositor {
             }
         }
 
+        // Fit mode: pre-blur the SCREEN into a reused texture; the kernel uses it
+        // as the background behind the aspect-fit (whole) desktop. Only when the
+        // layout actually shows the screen.
+        var screenBlurTex: MTLTexture?
+        if screenFit, layout.usesScreen, let s = screenTex {
+            if screenBlurDest?.width != s.width || screenBlurDest?.height != s.height {
+                let d = MTLTextureDescriptor.texture2DDescriptor(
+                    pixelFormat: .bgra8Unorm, width: s.width, height: s.height, mipmapped: false)
+                d.usage = [.shaderRead, .shaderWrite]
+                screenBlurDest = device.makeTexture(descriptor: d)
+            }
+            if let dest = screenBlurDest {
+                MPSImageGaussianBlur(device: device, sigma: max(20, Float(s.width) / 40))
+                    .encode(commandBuffer: cmdBuf, sourceTexture: s, destinationTexture: dest)
+                screenBlurTex = dest
+            }
+        }
+
         guard let encoder = cmdBuf.makeComputeCommandEncoder() else { return }
 
         encoder.setComputePipelineState(pipelineState)
@@ -273,6 +294,7 @@ public final class MetalCompositor {
         encoder.setTexture(blurTex ?? cameraTex ?? outTex, index: 4)
         encoder.setTexture(imageTex ?? cameraTex ?? outTex, index: 5)
         encoder.setTexture(borderTexture ?? cameraTex ?? outTex, index: 6)
+        encoder.setTexture(screenBlurTex ?? screenTex ?? outTex, index: 7)   // screen Fit bg
         encoder.setBytes(&uniforms, length: MemoryLayout<ComposeUniforms>.size, index: 0)
 
         let w = pipelineState.threadExecutionWidth
@@ -384,6 +406,7 @@ public final class MetalCompositor {
         uint hasBorderTex;    // 1 = sample borderTex at texture(6)
         uint borderTexW; uint borderTexH;  // border texture px (incl. pad)
         float borderPad;      // px of padding baked into the border texture
+        uint screenFit;       // 1 = aspect-fit whole screen over a blurred bg
     };
 
     // Sample with aspect-fill semantics — image fills the rect, cropping overflow.
@@ -542,6 +565,24 @@ public final class MetalCompositor {
         return solid;                 // solid color
     }
 
+    // Screen for a slot: Fit (whole desktop aspect-fit over a blurred-screen
+    // background) when `fit`, else the current anchored aspect-fill crop.
+    static float4 screenSlotColor(texture2d<float, access::sample> screenTex,
+                                  texture2d<float, access::sample> screenBlurTex,
+                                  float2 uv, float texW, float texH,
+                                  float rectW, float rectH, uint anchor, uint fit) {
+        if (fit == 0) {
+            return sampleScreenAnchored(screenTex, uv, texW, texH, rectW, rectH, anchor);
+        }
+        // Fit: blurred screen fills the slot; the whole screen sits on top.
+        float3 bg = sampleAspectFill(screenBlurTex, uv, texW, texH, rectW, rectH).rgb;
+        bool outside = false;
+        float2 fitUV = aspectFitCamUV(uv, texW, texH, rectW, rectH, outside);
+        if (outside) return float4(bg, 1.0);
+        constexpr sampler s(filter::linear, address::clamp_to_edge);
+        return float4(screenTex.sample(s, fitUV).rgb, 1.0);
+    }
+
     kernel void compose_kernel(
         texture2d<float, access::sample> screenTex [[texture(0)]],
         texture2d<float, access::sample> cameraTex [[texture(1)]],
@@ -550,6 +591,7 @@ public final class MetalCompositor {
         texture2d<float, access::sample> blurTex   [[texture(4)]],
         texture2d<float, access::sample> imageTex  [[texture(5)]],
         texture2d<float, access::sample> borderTex [[texture(6)]],
+        texture2d<float, access::sample> screenBlurTex [[texture(7)]],
         constant Uniforms& u [[buffer(0)]],
         uint2 gid [[thread_position_in_grid]]
     ) {
@@ -566,9 +608,9 @@ public final class MetalCompositor {
         if (u.layout == 4 /*screenOnly*/) {
             if (u.hasScreen != 0) {
                 float2 uv = float2(fx / fw, fy / fh);
-                color = sampleScreenAnchored(screenTex, uv,
-                                              float(u.screenWidth), float(u.screenHeight),
-                                              fw, fh, u.screenAnchor);
+                color = screenSlotColor(screenTex, screenBlurTex, uv,
+                                        float(u.screenWidth), float(u.screenHeight),
+                                        fw, fh, u.screenAnchor, u.screenFit);
             }
         } else if (u.layout == 3 /*cameraOnly*/) {
             if (u.hasCamera != 0) {
@@ -597,9 +639,9 @@ public final class MetalCompositor {
             float yInSlot = inTop ? fy : (fy - halfH);
             float2 uv = float2(fx / fw, yInSlot / halfH);
             if (screenSlot && u.hasScreen != 0) {
-                color = sampleScreenAnchored(screenTex, uv,
-                                              float(u.screenWidth), float(u.screenHeight),
-                                              fw, halfH, u.screenAnchor);
+                color = screenSlotColor(screenTex, screenBlurTex, uv,
+                                        float(u.screenWidth), float(u.screenHeight),
+                                        fw, halfH, u.screenAnchor, u.screenFit);
             } else if (!screenSlot && u.hasCamera != 0) {
                 float2 cuv = uv; if (u.mirror != 0) cuv.x = 1.0 - cuv.x;
                 color = sampleAspectFill(cameraTex, cuv,
@@ -620,9 +662,9 @@ public final class MetalCompositor {
             // uses the full screen, no crop).
             if (u.hasScreen != 0) {
                 float2 uv = float2(fx / fw, fy / fh);
-                color = sampleAspectFill(screenTex, uv,
-                                          float(u.screenWidth), float(u.screenHeight),
-                                          fw, fh);
+                color = screenSlotColor(screenTex, screenBlurTex, uv,
+                                        float(u.screenWidth), float(u.screenHeight),
+                                        fw, fh, u.screenAnchor, u.screenFit);
             }
             // PIP overlay.
             if (u.hasCamera != 0) {
@@ -773,4 +815,5 @@ struct ComposeUniforms {
     var borderTexW: UInt32     // border texture px (incl. pad)
     var borderTexH: UInt32
     var borderPad: Float       // px of padding baked into the border texture
+    var screenFit: UInt32      // 1 = whole screen (aspect-fit) over blurred screen bg
 }

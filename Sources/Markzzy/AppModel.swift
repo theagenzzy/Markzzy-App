@@ -303,6 +303,13 @@ public final class AppModel: ObservableObject {
             UserDefaults.standard.set(layout.rawValue, forKey: Keys.layout)
             syncRemovalForContext()
             reattachPreviewCameraIfIdle()
+            // Live view switching during a recording (Reels/Post): push the new
+            // layout + its background-removal/pip params to the running pipeline.
+            // The canvas/format stays fixed; only what the compositor draws changes.
+            if isActivelyRecording {
+                pipeline?.updateLayout(layout)
+                pushPIP()
+            }
         }
     }
 
@@ -379,7 +386,22 @@ public final class AppModel: ObservableObject {
         }
     }
     @Published public var screenAnchor: ScreenAnchor = AppModel.loadScreenAnchor() {
-        didSet { UserDefaults.standard.set(screenAnchor.rawValue, forKey: Keys.screenAnchor) }
+        didSet {
+            UserDefaults.standard.set(screenAnchor.rawValue, forKey: Keys.screenAnchor)
+            if isActivelyRecording { pipeline?.updateScreenAnchor(screenAnchor) }   // live crop
+        }
+    }
+    /// false = Fill (crop the screen to the slot, current). true = Fit (whole
+    /// desktop scaled to fit + blurred-screen background) — Reels/Post screens.
+    @Published public var screenFit: Bool = UserDefaults.standard.bool(forKey: "screenFit") {
+        didSet {
+            UserDefaults.standard.set(screenFit, forKey: "screenFit")
+            if isActivelyRecording { pipeline?.updateScreenFit(screenFit) }   // live
+        }
+    }
+    /// Whether the floating composed preview (Reels/Post recording) is shown.
+    @Published public var floatingPreviewVisible: Bool = true {
+        didSet { floatingPreview.map { $0.setVisible(floatingPreviewVisible) } }
     }
     @Published public var outputResolution: OutputResolution = AppModel.loadOutputResolution() {
         didSet { UserDefaults.standard.set(outputResolution.rawValue, forKey: Keys.outputResolution) }
@@ -419,6 +441,11 @@ public final class AppModel: ObservableObject {
     /// YouTube / pipOverlay layout. Dragging/resizing it drives `pipPosition` /
     /// `pipSize` live so the recorded camera follows it in real time.
     private var floatingCam: FloatingCameraPanel?
+
+    /// Floating composed-output preview (Reels/Post), alive only while recording.
+    /// Shows the live result + controls (switch view, pause/stop) so the user can
+    /// see/drive the recording when the main window isn't visible.
+    private var floatingPreview: FloatingPreviewPanel?
 
     public let previewSession = AVCaptureSession()
     var previewInput: AVCaptureDeviceInput?
@@ -686,6 +713,101 @@ public final class AppModel: ObservableObject {
         PerfLog.log("FLOATCAM: prepared frame=\(Int(panel.frame.width))x\(Int(panel.frame.height)) at (\(Int(panel.frame.minX)),\(Int(panel.frame.minY))) win=\(panel.windowNumber) on screen \(Int(screen.frame.width))x\(Int(screen.frame.height))")
     }
 
+    /// Floating composed preview for Reels/Post (not YouTube — that has the bubble).
+    private func showFloatingPreview() {
+        guard outputFormat != .youtube,
+              let screen = selectedScreen.flatMap({ nsScreen(for: $0) }) else { return }
+        let aspect: CGFloat = outputFormat == .square11 ? 1.0 : 9.0 / 16.0
+        let v = screen.visibleFrame
+        let h = min(v.height * 0.5, 520)
+        let w = h * aspect
+        // +barHeight: the control nav is a docked bar BELOW the video (not over it).
+        let frame = NSRect(x: v.maxX - w - 24, y: v.minY + (v.height - h) / 2,
+                           width: w, height: h + FloatingPreviewPanel.barHeight)
+        let panel = FloatingPreviewPanel(initialFrame: frame, aspect: aspect, model: self)
+        panel.onHide = { [weak self] in self?.floatingPreviewVisible = false }
+        floatingPreviewVisible = true
+        panel.orderFrontRegardless()
+        floatingPreview = panel
+        PerfLog.log("FLOATPREVIEW: shown \(Int(w))x\(Int(h)) at (\(Int(frame.minX)),\(Int(frame.minY)))")
+    }
+
+    private func hideFloatingPreview() {
+        floatingPreview?.teardown()
+        floatingPreview = nil
+    }
+
+    /// Move the pipOverlay circle by a normalized delta (dragging it on the
+    /// floating preview). Clamped; `pipPosition.didSet` pushes it live.
+    func nudgePip(dxFrac: CGFloat, dyFrac: CGFloat) {
+        if pipLiveEditing {
+            // Live circle drag: bypass @Published (its cascade re-renders the whole
+            // ControlPanel/preview tree per mouse move = the lag, worst with bg
+            // removal). Push straight to the pipeline; commit once on end.
+            var p = liveDragPos ?? pipPosition
+            p.x = min(max(p.x + dxFrac, 0), 1)
+            p.y = min(max(p.y + dyFrac, 0), 1)
+            liveDragPos = p
+            pushLivePip()
+        } else {
+            pipPosition = CGPoint(x: min(max(pipPosition.x + dxFrac, 0), 1),
+                                  y: min(max(pipPosition.y + dyFrac, 0), 1))
+        }
+    }
+
+    /// Resize the pipOverlay circle by a normalized delta (dragging its edge on the
+    /// floating preview). Clamped; live drag bypasses @Published like nudgePip.
+    func nudgePipSize(dFrac: CGFloat) {
+        if pipLiveEditing {
+            liveDragSize = min(max((liveDragSize ?? pipSize) + dFrac, 0.08), pipSizeMax)
+            pushLivePip()
+        } else {
+            pipSize = min(max(pipSize + dFrac, 0.08), pipSizeMax)
+        }
+    }
+
+    /// Max camera size for the current mode (matches the main panel's size row):
+    /// transparent silhouette goes up to 3× (overflows off-canvas), shaped color
+    /// to 1×, plain PIP to 0.40.
+    public var pipSizeMax: CGFloat {
+        faceCamBottomAnchored ? 3.0 : (backgroundRemovalActive ? 1.0 : 0.40)
+    }
+
+    /// True while the user is live-dragging/resizing the pip (circle drag or the
+    /// floating-preview size slider). During this, `saveFaceCamIfEnabled` is a
+    /// no-op (avoids a UserDefaults JSON write per mouse move = the drag lag) and
+    /// `pushPIP` skips the background re-push; we persist once on `endPipLiveEdit`.
+    private(set) var pipLiveEditing = false
+    // Pending values for a circle drag (the float-preview slider writes pipSize
+    // directly so it leaves these nil → not overwritten on commit).
+    private var liveDragPos: CGPoint?
+    private var liveDragSize: CGFloat?
+
+    func beginPipLiveEdit() {
+        pipLiveEditing = true
+        liveDragPos = nil
+        liveDragSize = nil
+    }
+
+    /// Push the in-flight drag values straight to the compositor (no @Published).
+    private func pushLivePip() {
+        pipeline?.updatePIP(position: liveDragPos ?? pipPosition,
+                            size: liveDragSize ?? pipSize,
+                            shape: pipShape, border: pipBorder, mirror: faceCamMirror)
+    }
+
+    func endPipLiveEdit() {
+        guard pipLiveEditing else { return }
+        pipLiveEditing = false
+        // Commit the drag results to @Published ONCE (single re-render); the
+        // didSet then persists. Only commit what actually changed in a circle drag.
+        if let p = liveDragPos { pipPosition = p }
+        if let s = liveDragSize { pipSize = s }
+        liveDragPos = nil
+        liveDragSize = nil
+        saveFaceCamIfEnabled()      // covers the slider path (no liveDrag* set)
+    }
+
     private func hideFloatingCamera() {
         // Release the camera session from the bubble's preview layer FIRST so the
         // device is fully free for the preview restore / next recording (otherwise
@@ -739,6 +861,7 @@ public final class AppModel: ObservableObject {
                 format: outputFormat,
                 layout: layout,
                 screenAnchor: screenAnchor,
+                screenFit: screenFit,
                 // Performance Mode forces HD (720p tier) regardless of
                 // user selection — cuts canvas pixel count by ~half,
                 // proportional reduction in compose + encoder work.
@@ -783,6 +906,8 @@ public final class AppModel: ObservableObject {
             try await pipe.start()
             // Now the camera session is live → feed the bubble's preview layer.
             floatingCam?.attach(session: pipe.cameraCaptureSession)
+            // Reels/Post: floating composed-output preview with controls.
+            showFloatingPreview()
             await livePreview.stop()
             recordingStart = Date()
             elapsed = 0
@@ -795,6 +920,7 @@ public final class AppModel: ObservableObject {
             state = .recording
         } catch {
             hideFloatingCamera()
+            hideFloatingPreview()
             applyPreviewCamera(selectedCamera)
             applyMicMonitor()
             let msg = Self.humanize(error)
@@ -863,6 +989,7 @@ public final class AppModel: ObservableObject {
         pipeline?.onComposedFrame = nil
         composedFrameActive = false
         hideFloatingCamera()
+        hideFloatingPreview()
 
         // Finalize the recording, capturing the result/error WITHOUT letting it
         // skip the camera-restore below. Previously a throw from stop() jumped
@@ -938,7 +1065,9 @@ public final class AppModel: ObservableObject {
         // from the bubble itself (guard against the feedback loop).
         syncFloatingCamFromModel()
         // Shape feeds the preview effect; re-derive the full background params.
-        pushBackground()
+        // During a live pos/size drag the background params don't change, so skip
+        // the re-push (keeps the drag smooth — updatePIP above still moves it).
+        if !pipLiveEditing { pushBackground() }
     }
 
     /// Push the model's pip frame/shape/border/mirror onto the live bubble.
@@ -1005,7 +1134,12 @@ public final class AppModel: ObservableObject {
     /// True for the transparent free-silhouette mode (no shape clip) — the
     /// camera slot uses native aspect and can sit flush to the edges.
     public var faceCamBottomAnchored: Bool {
-        backgroundRemovalActive && faceCamBgTransparent
+        // ONLY the pipOverlay transparent silhouette is bottom-anchored (native
+        // aspect / aspect-fit). Split & camera-only bg modes (blur/color/image)
+        // fill their slot — exclude them so the preview matches the recording
+        // (no black letterbox bars). `faceCamBgTransparent` can linger true from a
+        // prior pipOverlay session, hence the explicit `!splitBgActive`.
+        backgroundRemovalActive && faceCamBgTransparent && !splitBgActive
     }
 
     public func t(_ key: LKey) -> String { L10n.t(key, in: language) }

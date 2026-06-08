@@ -48,6 +48,10 @@ enum Telemetry {
         installHandlers()
     }
 
+    /// Current activated user email, set by LicenseManager so reports can be
+    /// attributed to a user in the admin (super-admin only). nil = anonymous.
+    static var currentEmail: String?
+
     /// Report a handled error/event (fire-and-forget). Safe from any thread.
     static func report(_ event: String, _ info: [String: String] = [:]) {
         send(type: "event", event: event, info: info, trace: nil)
@@ -79,13 +83,9 @@ enum Telemetry {
         send(type: "crash", event: "native_crash", info: [:], trace: trace)
     }
 
-    private static let installId: String = {
-        let key = "MARKZZY_INSTALL_ID"
-        if let id = UserDefaults.standard.string(forKey: key) { return id }
-        let id = UUID().uuidString
-        UserDefaults.standard.set(id, forKey: key)
-        return id
-    }()
+    /// Use the SAME stable id the licensing uses (`DeviceIdentity.id()`) so the
+    /// admin can join telemetry → `license_devices.device_id` → user.
+    private static var installId: String { DeviceIdentity.id() }
 
     private static var hwModel: String {
         var size = 0
@@ -106,6 +106,7 @@ enum Telemetry {
             "model": hwModel, "locale": Locale.current.identifier,
         ]
         if let trace { payload["trace"] = String(trace.prefix(20_000)) }
+        if let email = currentEmail, !email.isEmpty { payload["email"] = email }
 
         // Don't spam production telemetry from dev builds — just log locally.
         if isDev { print("TELEMETRY[\(type)] \(event) \(info)"); return }

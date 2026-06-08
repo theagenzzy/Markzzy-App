@@ -17,8 +17,33 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
     private let metalCompositor: MetalCompositor?
     private let recorder: Recorder
     private let format: OutputFormat
-    private let layout: Layout
-    private let screenAnchor: ScreenAnchor
+    /// Live-updatable so the user can switch the view (split / camera-only /
+    /// pip / screen-only) mid-recording. Lock-protected: written from the main
+    /// actor, read on the compose timer queue.
+    private var _layout: Layout
+    private let layoutLock = NSLock()
+    private var layout: Layout {
+        get { layoutLock.lock(); defer { layoutLock.unlock() }; return _layout }
+        set { layoutLock.lock(); _layout = newValue; layoutLock.unlock() }
+    }
+    /// Change the layout while recording (canvas/format stays fixed).
+    public func updateLayout(_ l: Layout) { layout = l }
+
+    // Screen crop anchor + fit mode — also live-updatable (same lock).
+    private var _screenAnchor: ScreenAnchor
+    private var screenAnchor: ScreenAnchor {
+        get { layoutLock.lock(); defer { layoutLock.unlock() }; return _screenAnchor }
+        set { layoutLock.lock(); _screenAnchor = newValue; layoutLock.unlock() }
+    }
+    public func updateScreenAnchor(_ a: ScreenAnchor) { screenAnchor = a }
+    /// false = Fill (crop the screen to the slot), true = Fit (whole desktop +
+    /// blurred-screen background). Live-updatable.
+    private var _screenFit: Bool = false
+    private var screenFit: Bool {
+        get { layoutLock.lock(); defer { layoutLock.unlock() }; return _screenFit }
+        set { layoutLock.lock(); _screenFit = newValue; layoutLock.unlock() }
+    }
+    public func updateScreenFit(_ f: Bool) { screenFit = f }
     private let canvasSize: CGSize
     private let queue = DispatchQueue(label: "markzzy.pipeline.sc")
     private let camQueue = DispatchQueue(label: "markzzy.pipeline.cam")
@@ -135,6 +160,7 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
                 format: OutputFormat = .youtube,
                 layout: Layout = .pipOverlay,
                 screenAnchor: ScreenAnchor = .center,
+                screenFit: Bool = false,
                 resolution: OutputResolution = .fullHd,
                 performanceMode: Bool = false) throws {
         self.performanceMode = performanceMode
@@ -142,8 +168,9 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
         self.camera = camera
         self.microphone = microphone
         self.format = format
-        self.layout = layout
-        self.screenAnchor = screenAnchor
+        self._layout = layout
+        self._screenAnchor = screenAnchor
+        self._screenFit = screenFit
         let size = format.canvasSize(for: screen, resolution: resolution)
         self.canvasSize = size
         // begin() truncates the perf log — must run BEFORE MetalCompositor
@@ -370,6 +397,7 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
         let metalRef = self.metalCompositor
         let layoutCopy = self.layout
         let anchorCopy = self.screenAnchor
+        let fitCopy = self.screenFit
         let onComposed = self.onComposedFrame
         let encoderQ = self.encoderQueue
         let hadCamera = (overlay != nil)
@@ -378,10 +406,12 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
             let t0 = DispatchTime.now()
             if let metal = metalRef {
                 metal.render(screen: base, camera: overlay, mask: segMask,
-                             into: outBuffer, layout: layoutCopy, screenAnchor: anchorCopy)
+                             into: outBuffer, layout: layoutCopy, screenAnchor: anchorCopy,
+                             screenFit: fitCopy)
             } else {
                 compositorRef.render(screen: base, camera: overlay, mask: segMask,
-                                     into: outBuffer, layout: layoutCopy, screenAnchor: anchorCopy)
+                                     into: outBuffer, layout: layoutCopy, screenAnchor: anchorCopy,
+                                     screenFit: fitCopy)
             }
             self?.recordComposeTiming(t0)
             encoderQ.async {

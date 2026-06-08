@@ -44,7 +44,11 @@ struct PIPComposedPreview: View {
                     .frame(width: s.width, height: s.height)
                     .clipped()
                     .offset(x: s.minX, y: s.minY)
-                    .opacity(model.layout.usesScreen ? 1 : 0)
+                    // During recording `screenView` shows the COMPOSED canvas for
+                    // every layout — so keep it visible even when the layout
+                    // itself doesn't use the screen (e.g. camera-only), otherwise
+                    // the preview goes blank after switching to camera-only.
+                    .opacity((model.layout.usesScreen || model.composedFrameActive) ? 1 : 0)
                     .overlay(
                         slotOutline
                             .frame(width: s.width, height: s.height)
@@ -136,13 +140,32 @@ struct PIPComposedPreview: View {
     @ViewBuilder
     private var screenView: some View {
         if let img = model.screenPreviewImage {
-            // Crop the screen preview exactly the way the compositor will —
-            // anchor-driven offset, not SwiftUI's default-center clipping.
-            GeometryReader { geo in
-                anchorCroppedImage(img: img, in: geo.size)
+            if model.screenFit && !model.composedFrameActive {
+                // Fit (whole desktop) — mirror the compositor: aspect-fit on top
+                // of a blurred-screen background. Only the SCREEN; the camera is a
+                // separate layer and is unaffected.
+                GeometryReader { geo in
+                    ZStack {
+                        Image(decorative: img, scale: 1)
+                            .resizable().scaledToFill()
+                            .frame(width: geo.size.width, height: geo.size.height)
+                            .clipped().blur(radius: 18)
+                        Image(decorative: img, scale: 1)
+                            .resizable().scaledToFit()
+                            .frame(width: geo.size.width, height: geo.size.height)
+                    }
+                }
+                .clipped()
+                .background(Color.black)
+            } else {
+                // Crop the screen preview exactly the way the compositor will —
+                // anchor-driven offset, not SwiftUI's default-center clipping.
+                GeometryReader { geo in
+                    anchorCroppedImage(img: img, in: geo.size)
+                }
+                .clipped()
+                .background(Color.black)
             }
-            .clipped()
-            .background(Color.black)
         } else {
             Color(NSColor.underPageBackgroundColor)
                 .overlay(
@@ -216,12 +239,20 @@ struct PIPComposedPreview: View {
                             .aspectRatio(contentMode: model.faceCamBottomAnchored ? .fit : .fill)
                             .frame(width: c.width, height: c.height)
                             .clipped()
-                    } else {
-                        // Matte still warming up (~0.3s). Show nothing (clear)
-                        // rather than the raw camera — no cyan-circle flash; the
-                        // screen behind shows through (transparent intent).
+                    } else if model.layout == .pipOverlay && model.faceCamBgTransparent {
+                        // Transparent cutout (Reel silhouette): during the ~0.3s
+                        // matte warm-up show NOTHING (clear) so the real background
+                        // never flashes through the cutout.
                         Color.clear
                             .frame(width: c.width, height: c.height)
+                    } else {
+                        // Split / camera-only / color modes: the background is
+                        // replaced opaquely, so show the RAW camera during warm-up
+                        // instead of blanking — the camera never "disappears" when
+                        // switching between None/Blur/Color/Image.
+                        CameraPreview(session: model.previewSession)
+                            .frame(width: c.width, height: c.height)
+                            .clipped()
                     }
                 } else if isOverlay {
                     // Floating PIP (YouTube + Reel/Post pipOverlay): clip to the

@@ -25,7 +25,9 @@ public final class LicenseManager: ObservableObject {
     /// Cached email derived from the JWT (NOT from Keychain) so SwiftUI body
     /// getters don't hit Security.framework on every redraw — that path was
     /// triggering Keychain access prompts and adding measurable latency.
-    @Published public private(set) var activatedEmail: String?
+    @Published public private(set) var activatedEmail: String? {
+        didSet { Telemetry.currentEmail = activatedEmail }   // attribute telemetry to the user
+    }
 
     // MARK: - Server-side subscription state (refreshed on every heartbeat)
 

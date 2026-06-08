@@ -291,7 +291,8 @@ public final class PIPCompositor {
                        mask: CVPixelBuffer? = nil,
                        into out: CVPixelBuffer,
                        layout: Layout,
-                       screenAnchor: ScreenAnchor) {
+                       screenAnchor: ScreenAnchor,
+                       screenFit: Bool = false) {
         let outW = CGFloat(CVPixelBufferGetWidth(out))
         let outH = CGFloat(CVPixelBufferGetHeight(out))
         let canvasRect = CGRect(x: 0, y: 0, width: outW, height: outH)
@@ -336,10 +337,8 @@ public final class PIPCompositor {
             }
         case .screenOnly:
             if let s = screen {
-                let src = CIImage(cvPixelBuffer: s)
-                let cropped = Self.cropToAspect(src, targetAspect: canvasRect.width / canvasRect.height,
-                                                anchor: screenAnchor)
-                result = Self.placeInSlot(cropped, into: canvasRect).composited(over: result)
+                result = Self.placeScreen(CIImage(cvPixelBuffer: s), into: canvasRect,
+                                          anchor: screenAnchor, fit: screenFit).composited(over: result)
             }
         case .splitScreenTop, .splitCamTop:
             let topRect    = CGRect(x: 0, y: outH / 2, width: outW, height: outH / 2)
@@ -350,11 +349,8 @@ public final class PIPCompositor {
             let cameraSlot = layout == .splitScreenTop ? bottomRect : topRect
 
             if let s = screen {
-                let src = CIImage(cvPixelBuffer: s)
-                let cropped = Self.cropToAspect(src,
-                                                targetAspect: screenSlot.width / screenSlot.height,
-                                                anchor: screenAnchor)
-                result = Self.placeInSlot(cropped, into: screenSlot).composited(over: result)
+                result = Self.placeScreen(CIImage(cvPixelBuffer: s), into: screenSlot,
+                                          anchor: screenAnchor, fit: screenFit).composited(over: result)
             }
             if let c = camera {
                 result = Self.placeAspectFill(camImage(c, fullFrame: false), into: cameraSlot)
@@ -414,6 +410,34 @@ public final class PIPCompositor {
         return scaled
             .transformed(by: CGAffineTransform(translationX: dx, y: dy))
             .cropped(to: slot)
+    }
+
+    /// Place a SCREEN into a slot: Fill (anchored crop, default) or Fit (the
+    /// whole screen aspect-fit over a blurred-screen background).
+    private static func placeScreen(_ src: CIImage, into slot: CGRect,
+                                    anchor: ScreenAnchor, fit: Bool) -> CIImage {
+        if !fit {
+            let cropped = cropToAspect(src, targetAspect: slot.width / slot.height, anchor: anchor)
+            return placeInSlot(cropped, into: slot)
+        }
+        let blurred = src.clampedToExtent()
+            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 28])
+            .cropped(to: src.extent)
+        let bg = placeAspectFill(blurred, into: slot)
+        let fitted = placeAspectFit(src, into: slot)
+        return fitted.composited(over: bg)
+    }
+
+    /// Scale `image` to FIT inside `dest` (whole image visible), centered.
+    private static func placeAspectFit(_ image: CIImage, into dest: CGRect) -> CIImage {
+        guard image.extent.width > 0, image.extent.height > 0 else { return image }
+        let scale = min(dest.width / image.extent.width, dest.height / image.extent.height)
+        let scaled = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let dx = dest.midX - scaled.extent.midX
+        let dy = dest.midY - scaled.extent.midY
+        return scaled
+            .transformed(by: CGAffineTransform(translationX: dx, y: dy))
+            .cropped(to: dest)
     }
 
     /// Scale `image` to fill `dest`, cropping overflow on the longer axis.

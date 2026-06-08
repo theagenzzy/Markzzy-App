@@ -166,7 +166,7 @@ extension AppModel {
     /// `isReconcilingFaceCam` guard suppresses saves mid format-swap.
     func saveFaceCamIfEnabled(for format: OutputFormat? = nil,
                               transparentMode: Bool? = nil) {
-        guard rememberFaceCam, !isReconcilingFaceCam else { return }
+        guard rememberFaceCam, !isReconcilingFaceCam, !pipLiveEditing else { return }
         let fmt = format ?? outputFormat
         let mode = transparentMode ?? (removeBackground && faceCamBgTransparent)
         var set = Self.loadFaceCamSet()

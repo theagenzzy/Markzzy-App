@@ -283,16 +283,33 @@ struct ControlPanel: View {
                     }
                     if model.layout.usesScreen {
                         Divider()
+                        // Fill (crop to frame) vs Fit (whole desktop + blurred bg).
                         HStack(spacing: 10) {
-                            Text(model.t(.screenAnchor))
+                            Text(model.language == .es ? "Pantalla" : "Screen")
                                 .frame(width: 95, alignment: .leading)
                                 .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.8)
-                            HStack(spacing: 6) {
-                                ForEach(ScreenAnchor.allCases) { anchorButton($0) }
+                                .lineLimit(1).minimumScaleFactor(0.8)
+                            Picker("", selection: $model.screenFit) {
+                                Text(model.language == .es ? "Llenar" : "Fill").tag(false)
+                                Text(model.language == .es ? "Ajustar" : "Fit").tag(true)
                             }
+                            .pickerStyle(.segmented).labelsHidden().frame(width: 160)
                             Spacer()
+                        }
+                        // Anchor only matters when cropping (Fill).
+                        if !model.screenFit {
+                            Divider()
+                            HStack(spacing: 10) {
+                                Text(model.t(.screenAnchor))
+                                    .frame(width: 95, alignment: .leading)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.8)
+                                HStack(spacing: 6) {
+                                    ForEach(ScreenAnchor.allCases) { anchorButton($0) }
+                                }
+                                Spacer()
+                            }
                         }
                     }
                 }
@@ -327,7 +344,10 @@ struct ControlPanel: View {
             RoundedRectangle(cornerRadius: 5)
                 .fill(active ? Color.accentColor : Color.secondary.opacity(0.12))
         )
-        .help(formatTooltip(f))
+        // Format = canvas size, baked into the recorder at start → can't change
+        // mid-recording. (Layout/view CAN change live; see layoutButton.)
+        .disabled(isRecording)
+        .help(isRecording ? model.t(.lockedDuringRecording) : formatTooltip(f))
     }
 
     /// Compact caption above the preview canvas. The dimensions become a Menu
@@ -620,8 +640,7 @@ struct ControlPanel: View {
         // landscape webcam (16:9) can still fill a vertical Reel (9:16): the
         // person scales up and the transparent side margins overflow off-canvas
         // (invisible), while the head-safe clamp keeps the head on screen.
-        let maxSize: CGFloat = model.faceCamBottomAnchored ? 3.0
-            : (model.backgroundRemovalActive ? 1.0 : 0.40)
+        let maxSize: CGFloat = model.pipSizeMax
         return HStack(spacing: 10) {
             Text(model.t(.size)).frame(width: 95, alignment: .leading)
                 .foregroundStyle(.secondary)
@@ -939,16 +958,30 @@ struct ControlPanel: View {
         switch model.state {
         case .recording:
             HStack(spacing: 8) {
+                showPreviewButton
                 pauseButton
                 stopButton
             }
         case .paused:
             HStack(spacing: 8) {
+                showPreviewButton
                 resumeButton
                 stopButton
             }
         default:
             startButton
+        }
+    }
+
+    /// Re-show the floating composed preview (Reels/Post) after it's been hidden.
+    @ViewBuilder
+    private var showPreviewButton: some View {
+        if model.outputFormat != .youtube, !model.floatingPreviewVisible {
+            Button { model.floatingPreviewVisible = true } label: {
+                Image(systemName: "rectangle.on.rectangle")
+                    .help(model.language == .es ? "Mostrar preview flotante" : "Show floating preview")
+            }
+            .controlSize(.large)
         }
     }
 
