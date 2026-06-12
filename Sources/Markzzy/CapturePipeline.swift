@@ -395,14 +395,20 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
         let recorderRef = self.recorder
         let compositorRef = self.compositor
         let metalRef = self.metalCompositor
-        let layoutCopy = self.layout
-        let anchorCopy = self.screenAnchor
-        let fitCopy = self.screenFit
         let onComposed = self.onComposedFrame
         let encoderQ = self.encoderQueue
         let hadCamera = (overlay != nil)
         composeQueue.async { [weak self] in
             defer { self?.decrementInFlight() }
+            // Read layout/anchor/fit HERE (render time) so they're consistent with
+            // the compositor's background state (bgMode/color), which render() reads
+            // at this same instant. Snapshotting layout earlier (tick time) while
+            // bg is read late let a layout switch render the new layout with the old
+            // background for a frame — the brief color flash on split→transparent.
+            guard let self else { return }
+            let layoutCopy = self.layout
+            let anchorCopy = self.screenAnchor
+            let fitCopy = self.screenFit
             let t0 = DispatchTime.now()
             if let metal = metalRef {
                 metal.render(screen: base, camera: overlay, mask: segMask,
@@ -413,7 +419,7 @@ public final class CapturePipeline: NSObject, @unchecked Sendable {
                                      into: outBuffer, layout: layoutCopy, screenAnchor: anchorCopy,
                                      screenFit: fitCopy)
             }
-            self?.recordComposeTiming(t0)
+            self.recordComposeTiming(t0)
             encoderQ.async {
                 recorderRef.appendVideo(outBuffer, pts: pts)
                 onComposed?(outBuffer, hadCamera)

@@ -360,6 +360,14 @@ extension AppModel {
         if selectedScreen == nil { selectedScreen = screenSources.first }
         let phone = DeviceFilter.bestRealIPhone(in: cameras,
                                                 minAffinity: deviceFilter.minIPhoneAffinity)
+        // Clear a stale disconnect flag if the iPhone is actually present at
+        // launch/refresh. `handleDeviceChange` only fires on a device CHANGE, so
+        // an iPhone already connected when the app opens would otherwise leave the
+        // persisted flag set → the "iPhone disconnected" banner stuck on a working
+        // camera.
+        if phone != nil, iPhoneRecentlyDisconnected {
+            iPhoneRecentlyDisconnected = false
+        }
         if wantsContinuityCamera {
             selectedCamera = phone
         } else if selectedCamera == nil {

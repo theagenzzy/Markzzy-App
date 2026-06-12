@@ -158,7 +158,12 @@ public final class MetalCompositor {
         var borderTexW: UInt32 = 0, borderTexH: UInt32 = 0
         var borderPadPx: Float = 0
         var borderTexture: MTLTexture?
-        let transparentCutout = (rmBg && maskTex != nil && bgM == 0)
+        // Transparent silhouette mode = NO border ring, regardless of whether the
+        // segmentation mask is ready yet. (Previously this also required
+        // `maskTex != nil`, so the first frame(s) after enabling removal — before
+        // the matte warms up — drew the ring for ~1 frame: the cyan border flash
+        // when switching split → pipOverlay transparent.)
+        let transparentCutout = (rmBg && bgM == 0)
         if layout == .pipOverlay, bd.style != .none, bd.width > 0, !transparentCutout {
             let pipWpx = max(1, Int((CGFloat(outW) * sz).rounded()))
             let pipHpx: Int

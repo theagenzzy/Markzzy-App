@@ -99,6 +99,7 @@ struct PIPComposedPreview: View {
                 //   - the layout actually uses a camera.
                 if model.iPhoneRecentlyDisconnected,
                    model.wantsContinuityCamera,
+                   model.selectedCamera == nil,   // no iPhone actually bound → self-corrects on reconnect
                    model.layout.usesCamera {
                     IPhoneDisconnectedBanner()
                         .environmentObject(model)

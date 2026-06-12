@@ -319,7 +319,31 @@ public final class AppModel: ObservableObject {
     /// shown for that context instead.
     private func syncRemovalForContext() {
         let shouldRemove = outputFormat != .youtube && layout == .pipOverlay
-        if removeBackground != shouldRemove { removeBackground = shouldRemove }
+        if removeBackground != shouldRemove {
+            // Suppress the per-property save while flipping removal — its didSet
+            // clamps pipSize (plain-PIP cap) which would otherwise overwrite the
+            // stored sub-slot with the clamped value. The size is reloaded below.
+            isReconcilingFaceCam = true
+            removeBackground = shouldRemove
+            isReconcilingFaceCam = false
+        }
+        reloadFaceCamSizePosForContext()
+    }
+
+    /// Restore the live camera size/position from the saved sub-slot for the
+    /// current pipOverlay mode (transparent vs color), so leaving pipOverlay
+    /// (which clamps pipSize) and coming back keeps the size the user set.
+    private func reloadFaceCamSizePosForContext() {
+        guard rememberFaceCam, layout == .pipOverlay else { return }
+        let v = Self.loadedFaceCam(for: outputFormat)
+        let transparentMode = removeBackground && faceCamBgTransparent
+        let size = transparentMode ? v.transparentSize : v.size
+        let pos  = transparentMode ? v.transparentPosition : v.position
+        isReconcilingFaceCam = true     // assigning pipSize/pos must not re-save
+        pipSize = min(max(size, 0.08), pipSizeMax)
+        pipPosition = pos
+        isReconcilingFaceCam = false
+        if isActivelyRecording { pushPIP() }   // live: reflect the restored size
     }
 
     /// Re-bind the camera to the preview session and force the camera
