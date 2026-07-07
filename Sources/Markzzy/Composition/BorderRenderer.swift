@@ -149,16 +149,16 @@ enum BorderRenderer {
         let scaled = max(0, min(t, 1)) * segments
         let i = min(Int(scaled), colors.count - 2)
         let frac = scaled - CGFloat(i)
-        let c1 = colors[i].components ?? [0, 0, 0, 1]
-        let c2 = colors[i + 1].components ?? [0, 0, 0, 1]
+        // srgbRGBA always yields 4 components — safe even for grayscale CGColors
+        // (indexing `.components` on a 2-component gray would crash).
+        let c1 = colors[i].srgbRGBA
+        let c2 = colors[i + 1].srgbRGBA
         func lerp(_ a: CGFloat, _ b: CGFloat) -> CGFloat { a + (b - a) * frac }
-        let a1 = c1.count > 3 ? c1[3] : 1
-        let a2 = c2.count > 3 ? c2[3] : 1
         return CGColor(
-            red:   lerp(c1[0], c2[0]),
-            green: lerp(c1[1], c2[1]),
-            blue:  lerp(c1[2], c2[2]),
-            alpha: a1 + (a2 - a1) * frac
+            red:   lerp(c1.r, c2.r),
+            green: lerp(c1.g, c2.g),
+            blue:  lerp(c1.b, c2.b),
+            alpha: lerp(c1.a, c2.a)
         )
     }
 

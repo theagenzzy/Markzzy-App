@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import CryptoKit
 
 @MainActor
 public final class LicenseManager: ObservableObject {
@@ -357,6 +358,11 @@ public final class LicenseManager: ObservableObject {
         (Bundle.main.bundleIdentifier ?? "").hasPrefix("dev.")
     }
 
+    /// One-shot guard so a token that fails signature verification triggers at
+    /// most one server re-verify per session (prevents a refresh loop if the
+    /// backend's signing key ever mismatches the embedded public key).
+    private var didAttemptTokenReverify = false
+
     public func refreshStatus() {
         // Dev builds NEVER touch the keychain — that's what triggers the
         // "Markzzy wants to access key dev.markzzy.app" password prompt
@@ -371,13 +377,25 @@ public final class LicenseManager: ObservableObject {
             currentPeriodEnd = Date().addingTimeInterval(365 * 86_400)
             return
         }
-        guard let token = Keychain.get(KC.token),
-              let claims = Self.decodeClaims(from: token)
-        else {
+        guard let token = Keychain.get(KC.token) else {
             status = .unactivated
             activatedEmail = nil
             return
         }
+        guard let claims = Self.decodeClaims(from: token) else {
+            // Token present but signature invalid (a forgery) or a legacy HS256
+            // token from before EdDSA. Don't grant access. Ask the server ONCE:
+            // it re-issues a valid EdDSA token for a real legacy token, or 401s
+            // a forgery.
+            status = .unactivated
+            activatedEmail = nil
+            if !didAttemptTokenReverify {
+                didAttemptTokenReverify = true
+                Task { await refreshFromServer() }
+            }
+            return
+        }
+        didAttemptTokenReverify = false
         if claims.expiresAt <= Date() {
             status = .expired
             activatedEmail = nil
@@ -753,7 +771,44 @@ public final class LicenseManager: ObservableObject {
         }
     }
 
-    // MARK: - JWT payload decoding (no signature verification)
+    // MARK: - JWT signature verification (Ed25519 / EdDSA)
+
+    /// Ed25519 PUBLIC key (raw 32 bytes, base64) matching the private key the
+    /// backend signs license tokens with (`markzzy-web/lib/jwt.ts`). Embedding
+    /// a PUBLIC key is safe — it can only verify, not sign. This is what closes
+    /// the license-forgery hole: claims are trusted ONLY if the signature checks
+    /// out against this key, so a token planted in the keychain can't unlock the
+    /// app unless the backend actually issued it.
+    private static let licensePublicKeyB64 = "pVs7PnyYtvJqXtpVu495t4Tmxt3hhAcaupwKuVO8lks="
+
+    /// Verifies the JWS signature of an EdDSA-signed license token.
+    /// Returns false for any other alg (blocks alg-confusion / `none` / HS256
+    /// forgeries), a malformed token, or a bad signature.
+    private static func verifySignature(token: String) -> Bool {
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 3 else { return false }
+        let headerPart = String(parts[0])
+        let payloadPart = String(parts[1])
+        let sigPart = String(parts[2])
+
+        // Header must declare EdDSA — never trust a token that asks us to skip
+        // or downgrade verification.
+        guard let headerData = base64urlDecode(headerPart),
+              let header = try? JSONSerialization.jsonObject(with: headerData) as? [String: Any],
+              (header["alg"] as? String) == "EdDSA"
+        else { return false }
+
+        guard let sig = base64urlDecode(sigPart),
+              let keyData = Data(base64Encoded: licensePublicKeyB64),
+              let pub = try? Curve25519.Signing.PublicKey(rawRepresentation: keyData)
+        else { return false }
+
+        // JWS signing input is the ASCII "<header>.<payload>".
+        let signingInput = Data((headerPart + "." + payloadPart).utf8)
+        return pub.isValidSignature(sig, for: signingInput)
+    }
+
+    // MARK: - JWT payload decoding (signature-verified)
 
     /// Schema version this build of the Mac app expects from the JWT.
     /// MUST equal `JWT_SCHEMA_VERSION` in `markzzy-web/lib/jwt.ts`. When
@@ -779,6 +834,10 @@ public final class LicenseManager: ObservableObject {
     static func decodeClaims(from token: String) -> Claims? {
         let parts = token.split(separator: ".")
         guard parts.count == 3 else { return nil }
+        // Reject anything the backend didn't sign. A forged/legacy token returns
+        // nil here → refreshStatus won't grant access; it asks the server, which
+        // re-issues a valid EdDSA token or 401s a forgery.
+        guard verifySignature(token: token) else { return nil }
         let payloadPart = String(parts[1])
         guard let data = base64urlDecode(payloadPart),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

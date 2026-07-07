@@ -649,6 +649,11 @@ public final class AppModel: ObservableObject {
     }
 
     private func runCountdownThenStart() async {
+        // Claim the state immediately so a second Record press / ⇧⌘R during the
+        // 3-2-1 window is ignored (toggleRecording only acts on .idle/.done/.failed).
+        // Otherwise two countdowns both fire startRecording → two live pipelines,
+        // a leaked SCStream/camera session, and two growing mp4s.
+        state = .preparing
         for i in [3, 2, 1] {
             countdownValue = i
             try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -820,6 +825,21 @@ public final class AppModel: ObservableObject {
                             shape: pipShape, border: pipBorder, mirror: faceCamMirror)
     }
 
+    /// Absolute-position variant for the main-canvas circle drag. During a live
+    /// drag it bypasses @Published (which otherwise writes UserDefaults JSON +
+    /// re-renders the whole ControlPanel/preview tree per mouse move = the lag,
+    /// worst with bg removal) and pushes straight to the pipeline; committed once
+    /// on endPipLiveEdit. In idle preview (no pipeline) callers set pipPosition
+    /// directly so the SwiftUI overlay keeps tracking the cursor.
+    func setPipPositionLive(_ p: CGPoint) {
+        if pipLiveEditing {
+            liveDragPos = p
+            pushLivePip()
+        } else {
+            pipPosition = p
+        }
+    }
+
     func endPipLiveEdit() {
         guard pipLiveEditing else { return }
         pipLiveEditing = false
@@ -871,6 +891,8 @@ public final class AppModel: ObservableObject {
         prepareFloatingCamera()
         let outURL = defaultOutputURL()
         currentOutputURL = outURL
+        // Held so the catch can tear down a pipeline that started but then failed.
+        var built: CapturePipeline?
         do {
             let pipe = try CapturePipeline(
                 screen: screen,
@@ -922,6 +944,7 @@ public final class AppModel: ObservableObject {
             // (bgRemovalEnabled defaults to false) → the raw camera WITH its
             // background flashes at the start of every transparent recording.
             pipeline = pipe
+            built = pipe
             // Exclude the floating bubble's window from THIS recording only.
             if let win = floatingCam?.windowNumber, win > 0 {
                 pipe.excludedWindowID = CGWindowID(win)
@@ -943,6 +966,18 @@ public final class AppModel: ObservableObject {
             }
             state = .recording
         } catch {
+            // Tear down the half-started pipeline: start() may have left the
+            // camera session running (device stays "in use" → the preview camera
+            // can't rebind → black slot) and created a ~0-byte mp4. Release both
+            // before restoring the idle preview.
+            if let pipe = built {
+                _ = try? await pipe.stop()
+            }
+            pipeline = nil
+            if let url = currentOutputURL {
+                try? FileManager.default.removeItem(at: url)
+            }
+            currentOutputURL = nil
             hideFloatingCamera()
             hideFloatingPreview()
             applyPreviewCamera(selectedCamera)

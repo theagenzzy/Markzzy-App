@@ -209,6 +209,12 @@ public final class MetalCompositor {
             makeTexture(from: $0, cache: textureCache, format: .bgra8Unorm, usage: [.shaderRead])
         } : nil
 
+        // Normalize border colors to sRGB RGBA once. Indexing `.components`
+        // directly crashes for non-RGBA CGColors (e.g. a 2-component gray from
+        // the color panel's Grayscale tab) — srgbRGBA is crash-safe.
+        let borderC = bd.color.srgbRGBA
+        let border2C = bd.color2.srgbRGBA
+
         var uniforms = ComposeUniforms(
             outWidth: UInt32(outW),
             outHeight: UInt32(outH),
@@ -226,13 +232,13 @@ public final class MetalCompositor {
             pipShape: shapeCode(sh),
             borderStyle: borderCode(bd.style),
             borderWidth: Float(bd.width),
-            borderR: Float(bd.color.components?[0] ?? 0),
-            borderG: Float(bd.color.components?[1] ?? 0),
-            borderB: Float(bd.color.components?[2] ?? 0),
-            borderA: Float(bd.color.components?[3] ?? 1),
-            border2R: Float(bd.color2.components?[0] ?? 0),
-            border2G: Float(bd.color2.components?[1] ?? 0),
-            border2B: Float(bd.color2.components?[2] ?? 0),
+            borderR: Float(borderC.r),
+            borderG: Float(borderC.g),
+            borderB: Float(borderC.b),
+            borderA: Float(borderC.a),
+            border2R: Float(border2C.r),
+            border2G: Float(border2C.g),
+            border2B: Float(border2C.b),
             removeBg: (rmBg && maskTex != nil) ? 1 : 0,
             bgMode: UInt32(max(0, min(3, bgM))),
             hasMask: maskTex != nil ? 1 : 0,

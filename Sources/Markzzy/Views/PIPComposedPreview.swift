@@ -123,8 +123,21 @@ struct PIPComposedPreview: View {
                 // Drag libre — sin snap. Las esquinas siguen accesibles vía los
                 // botones cornerButton. Transparente puede llegar a los bordes.
                 let edges = model.faceCamBottomAnchored
-                model.pipPosition = CGPoint(x: clamp(nx, edges: edges),
-                                            y: clamp(ny, edges: edges))
+                let pos = CGPoint(x: clamp(nx, edges: edges),
+                                  y: clamp(ny, edges: edges))
+                // While a composed recording is live, bypass @Published so the
+                // drag doesn't do a UserDefaults JSON write + whole-tree re-render
+                // per mouse move (the lag, worst in transparente/color). In idle
+                // preview the SwiftUI overlay reads pipPosition, so set it directly.
+                if model.composedFrameActive {
+                    if !model.pipLiveEditing { model.beginPipLiveEdit() }
+                    model.setPipPositionLive(pos)
+                } else {
+                    model.pipPosition = pos
+                }
+            }
+            .onEnded { _ in
+                if model.pipLiveEditing { model.endPipLiveEdit() }
             }
     }
 
