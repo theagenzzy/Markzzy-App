@@ -233,7 +233,9 @@ struct VideoLibraryView: View {
         .padding(.vertical, 10)
         .background(.bar)
         .confirmationDialog(
-            String(format: model.t(.confirmDeleteVideos), selected.count),
+            selected.count == 1
+                ? model.t(.confirmDeleteVideo)
+                : String(format: model.t(.confirmDeleteVideos), selected.count),
             isPresented: $pendingBulkDelete,
             titleVisibility: .visible
         ) {
