@@ -34,7 +34,7 @@ struct TrialBanner: View {
                 Text(label(forDays: days))
                     .font(.system(size: 12, weight: .medium))
                 Spacer(minLength: 8)
-                Button("Upgrade →") { license.openUpgrade() }
+                Button(L10n.t(.trialBannerUpgrade)) { license.openUpgrade() }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                     .tint(.white.opacity(0.95))
@@ -48,7 +48,7 @@ struct TrialBanner: View {
                         .frame(width: 22, height: 22)
                 }
                 .buttonStyle(.plain)
-                .help("Dismiss for today")
+                .help(L10n.t(.dismissForToday))
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
@@ -59,11 +59,11 @@ struct TrialBanner: View {
     }
 
     private func label(forDays days: Int?) -> String {
-        guard let d = days else { return "Trial active — upgrade any time" }
+        guard let d = days else { return L10n.t(.trialActiveUpgradeAnytime) }
         switch d {
-        case 0: return "Trial ends today — upgrade to keep recording"
-        case 1: return "Trial ends tomorrow — upgrade now"
-        default: return "\(d) days left in trial"
+        case 0: return L10n.t(.trialEndsTodayUpgrade)
+        case 1: return L10n.t(.trialEndsTomorrowUpgrade)
+        default: return String(format: L10n.t(.trialDaysLeftInTrial), d)
         }
     }
 
@@ -88,10 +88,10 @@ struct PaymentIssueBanner: View {
             HStack(spacing: 10) {
                 Image(systemName: "creditcard.trianglebadge.exclamationmark")
                     .font(.system(size: 14, weight: .semibold))
-                Text("Payment issue — update your card to avoid interruption")
+                Text(L10n.t(.paymentIssueBanner))
                     .font(.system(size: 12, weight: .medium))
                 Spacer(minLength: 8)
-                Button("Update payment →") { license.openUpdatePayment() }
+                Button(L10n.t(.licenseUpdatePaymentButton) + " →") { license.openUpdatePayment() }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                     .tint(.white)
@@ -124,10 +124,10 @@ struct CanceledBanner: View {
             HStack(spacing: 10) {
                 Image(systemName: "calendar.badge.exclamationmark")
                     .font(.system(size: 13, weight: .semibold))
-                Text("Subscription ends \(Self.dateFormatter.string(from: endsAt))")
+                Text(String(format: L10n.t(.licenseSubEndsOnFormat), Self.dateFormatter.string(from: endsAt)))
                     .font(.system(size: 12, weight: .medium))
                 Spacer(minLength: 8)
-                Button("Reactivate →") { license.openDashboard() }
+                Button(L10n.t(.licenseReactivateButton) + " →") { license.openDashboard() }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                     .tint(.white)

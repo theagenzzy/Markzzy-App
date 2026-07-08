@@ -587,23 +587,23 @@ public final class LicenseManager: ObservableObject {
     /// user knows what to fix.
     public nonisolated static func validationError(for email: String) -> String? {
         if email.isEmpty {
-            return "Please enter your email."
+            return L10n.t(.errEmailEmpty)
         }
         if !email.contains("@") {
-            return "An email needs an @ — like you@gmail.com."
+            return L10n.t(.errEmailNoAt)
         }
         let parts = email.split(separator: "@", omittingEmptySubsequences: false)
         if parts.count != 2 || parts[0].isEmpty {
-            return "Add your username before the @."
+            return L10n.t(.errEmailNoUser)
         }
         if parts[1].isEmpty {
-            return "Add the domain after the @ — like gmail.com."
+            return L10n.t(.errEmailNoDomain)
         }
         if !parts[1].contains(".") {
-            return "Email looks incomplete — make sure it ends with .com or similar."
+            return L10n.t(.errEmailIncomplete)
         }
         if !isValidEmail(email) {
-            return "That doesn't look like a valid email."
+            return L10n.t(.errEmailInvalid)
         }
         return nil
     }
@@ -723,7 +723,7 @@ public final class LicenseManager: ObservableObject {
     private static func errorMessage(_ error: Error) -> String {
         if let e = error as? LicenseError {
             switch e {
-            case .network(let m): return "Network: \(m)"
+            case .network(let m): return String(format: L10n.t(.errNetworkPrefix), m)
             case .server(let m): return Self.humanize(serverCode: m)
             }
         }
@@ -736,9 +736,9 @@ public final class LicenseManager: ObservableObject {
             switch ns.code {
             case NSURLErrorTimedOut, NSURLErrorCannotConnectToHost,
                  NSURLErrorCannotFindHost, NSURLErrorNetworkConnectionLost:
-                return "Couldn't reach the Markzzy server. Check your internet connection — if it's working, the server may be temporarily down. Try again in a moment."
+                return L10n.t(.errServerUnreachable)
             case NSURLErrorNotConnectedToInternet:
-                return "No internet connection. Check your Wi-Fi and try again."
+                return L10n.t(.errNoInternet)
             default:
                 break
             }
@@ -748,26 +748,26 @@ public final class LicenseManager: ObservableObject {
 
     private static func humanize(serverCode: String) -> String {
         switch serverCode {
-        case "invalid_code":   return "That code is not valid."
-        case "code_used":      return "This code was already used."
-        case "code_expired":   return "Code expired. Request a new one."
-        case "email_mismatch": return "Email doesn't match the account."
-        case "no_subscription": return "This email doesn't have an active subscription. Get one at markzzy.tech."
-        case "invalid_input":  return "Check the email and code."
-        case "invalid_link":   return "This activation link is not valid."
-        case "link_used":      return "This activation link was already used."
-        case "link_expired":   return "Activation link expired. Request a new one."
-        case "device_limit":   return "Another Mac is already activated on this account. Sign it out at markzzy.tech, then try again."
-        case "device_revoked": return "This Mac was signed out from the dashboard."
-        case "invalid_device": return "Couldn't identify this Mac."
+        case "invalid_code":   return L10n.t(.errInvalidCode)
+        case "code_used":      return L10n.t(.errCodeUsed)
+        case "code_expired":   return L10n.t(.errCodeExpired)
+        case "email_mismatch": return L10n.t(.errEmailMismatch)
+        case "no_subscription": return L10n.t(.errNoSubscription)
+        case "invalid_input":  return L10n.t(.errInvalidInput)
+        case "invalid_link":   return L10n.t(.errInvalidLink)
+        case "link_used":      return L10n.t(.errLinkUsed)
+        case "link_expired":   return L10n.t(.errLinkExpired)
+        case "device_limit":   return L10n.t(.errDeviceLimit)
+        case "device_revoked": return L10n.t(.errDeviceRevoked)
+        case "invalid_device": return L10n.t(.errInvalidDevice)
         case "rate_limited", "too_many_requests":
-                               return "Too many attempts. Wait a minute and try again."
+                               return L10n.t(.errRateLimited)
         case "server_error", "internal_error":
-                               return "Server error. We're already on it — try again in a moment."
+                               return L10n.t(.errServerError)
         default:
             // Don't show raw codes to users. Keep the code in the
             // message but in parentheses for support tickets.
-            return "Something unexpected happened (\(serverCode)). If this keeps happening, contact support."
+            return String(format: L10n.t(.errUnexpected), serverCode)
         }
     }
 

@@ -41,7 +41,7 @@ struct LicenseLockView: View {
                 Button {
                     license.openUpgrade()
                 } label: {
-                    Label("Upgrade now", systemImage: "arrow.up.right.square")
+                    Label(model.t(.lockUpgradeNow), systemImage: "arrow.up.right.square")
                         .font(.system(size: 14, weight: .semibold))
                         .frame(maxWidth: 280)
                         .padding(.vertical, 6)
@@ -49,7 +49,7 @@ struct LicenseLockView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
 
-                Button("I already have a subscription") {
+                Button(model.t(.lockHaveSubscription)) {
                     // Re-trigger the activation flow without losing the existing
                     // (now-invalid) Keychain state.
                     license.signOut()
@@ -61,7 +61,7 @@ struct LicenseLockView: View {
 
             Spacer()
 
-            Text("All your settings are saved. They'll be there when you come back.")
+            Text(model.t(.lockSettingsSaved))
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .padding(.bottom, 24)
@@ -87,28 +87,28 @@ struct LicenseLockView: View {
     private var title: String {
         switch license.status {
         case .expired:
-            return license.isTrialing ? "Your trial has ended" : "Your subscription expired"
+            return license.isTrialing ? model.t(.lockTrialEnded) : model.t(.lockSubExpired)
         case .unactivated:
-            return "Sign in to continue"
+            return model.t(.lockSignInToContinue)
         default:
-            if license.subStatus == .canceled { return "Your subscription ended" }
-            return "Access locked"
+            if license.subStatus == .canceled { return model.t(.lockSubEnded) }
+            return model.t(.lockAccessLocked)
         }
     }
 
     private var subtitle: String {
         switch license.status {
         case .expired where license.isTrialing:
-            return "Upgrade to Markzzy Monthly or Lifetime to keep recording. All your face cam and layout settings are preserved."
+            return model.t(.lockSubtitleTrialExpired)
         case .expired:
-            return "Reactivate your subscription to keep recording."
+            return model.t(.lockSubtitleReactivate)
         case .unactivated:
-            return "Sign in with the email you used to subscribe — we'll email you a one-click activation link."
+            return model.t(.lockSubtitleSignIn)
         default:
             if license.subStatus == .canceled {
-                return "Your subscription was canceled. Reactivate any time to pick up where you left off."
+                return model.t(.lockSubtitleCanceled)
             }
-            return "We can't verify your access. Try signing in again or contact support."
+            return model.t(.lockSubtitleCantVerify)
         }
     }
 }

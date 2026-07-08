@@ -210,6 +210,24 @@ public enum LKey: String, CaseIterable {
     case libraryActionPlay                  // "Play"
     case libraryActionShowInFinder          // "Show in Finder"
     case libraryActionDelete                // "Delete"
+
+    // License: full-screen lock + trial/payment banners
+    case lockUpgradeNow, lockHaveSubscription, lockSettingsSaved
+    case lockTrialEnded, lockSubExpired, lockSignInToContinue, lockSubEnded, lockAccessLocked
+    case lockSubtitleTrialExpired, lockSubtitleReactivate, lockSubtitleSignIn
+    case lockSubtitleCanceled, lockSubtitleCantVerify
+    case trialBannerUpgrade, dismissForToday, trialActiveUpgradeAnytime
+    case trialEndsTodayUpgrade, trialEndsTomorrowUpgrade, trialDaysLeftInTrial
+    case paymentIssueBanner
+
+    // License: email validation + network/server error messages
+    case errEmailEmpty, errEmailNoAt, errEmailNoUser, errEmailNoDomain
+    case errEmailIncomplete, errEmailInvalid
+    case errNetworkPrefix, errServerUnreachable, errNoInternet
+    case errInvalidCode, errCodeUsed, errCodeExpired, errEmailMismatch
+    case errNoSubscription, errInvalidInput, errInvalidLink, errLinkUsed
+    case errLinkExpired, errDeviceLimit, errDeviceRevoked, errInvalidDevice
+    case errRateLimited, errServerError, errUnexpected
 }
 
 public enum L10n {
@@ -458,6 +476,52 @@ public enum L10n {
             .libraryActionPlay: "Play",
             .libraryActionShowInFinder: "Show in Finder",
             .libraryActionDelete: "Delete",
+
+            .lockUpgradeNow: "Upgrade now",
+            .lockHaveSubscription: "I already have a subscription",
+            .lockSettingsSaved: "All your settings are saved. They'll be there when you come back.",
+            .lockTrialEnded: "Your trial has ended",
+            .lockSubExpired: "Your subscription expired",
+            .lockSignInToContinue: "Sign in to continue",
+            .lockSubEnded: "Your subscription ended",
+            .lockAccessLocked: "Access locked",
+            .lockSubtitleTrialExpired: "Upgrade to Markzzy Monthly or Lifetime to keep recording. All your face cam and layout settings are preserved.",
+            .lockSubtitleReactivate: "Reactivate your subscription to keep recording.",
+            .lockSubtitleSignIn: "Sign in with the email you used to subscribe — we'll email you a one-click activation link.",
+            .lockSubtitleCanceled: "Your subscription was canceled. Reactivate any time to pick up where you left off.",
+            .lockSubtitleCantVerify: "We can't verify your access. Try signing in again or contact support.",
+            .trialBannerUpgrade: "Upgrade →",
+            .dismissForToday: "Dismiss for today",
+            .trialActiveUpgradeAnytime: "Trial active — upgrade any time",
+            .trialEndsTodayUpgrade: "Trial ends today — upgrade to keep recording",
+            .trialEndsTomorrowUpgrade: "Trial ends tomorrow — upgrade now",
+            .trialDaysLeftInTrial: "%d days left in trial",
+            .paymentIssueBanner: "Payment issue — update your card to avoid interruption",
+
+            .errEmailEmpty: "Please enter your email.",
+            .errEmailNoAt: "An email needs an @ — like you@gmail.com.",
+            .errEmailNoUser: "Add your username before the @.",
+            .errEmailNoDomain: "Add the domain after the @ — like gmail.com.",
+            .errEmailIncomplete: "Email looks incomplete — make sure it ends with .com or similar.",
+            .errEmailInvalid: "That doesn't look like a valid email.",
+            .errNetworkPrefix: "Network: %@",
+            .errServerUnreachable: "Couldn't reach the Markzzy server. Check your internet connection — if it's working, the server may be temporarily down. Try again in a moment.",
+            .errNoInternet: "No internet connection. Check your Wi-Fi and try again.",
+            .errInvalidCode: "That code is not valid.",
+            .errCodeUsed: "This code was already used.",
+            .errCodeExpired: "Code expired. Request a new one.",
+            .errEmailMismatch: "Email doesn't match the account.",
+            .errNoSubscription: "This email doesn't have an active subscription. Get one at markzzy.tech.",
+            .errInvalidInput: "Check the email and code.",
+            .errInvalidLink: "This activation link is not valid.",
+            .errLinkUsed: "This activation link was already used.",
+            .errLinkExpired: "Activation link expired. Request a new one.",
+            .errDeviceLimit: "Another Mac is already activated on this account. Sign it out at markzzy.tech, then try again.",
+            .errDeviceRevoked: "This Mac was signed out from the dashboard.",
+            .errInvalidDevice: "Couldn't identify this Mac.",
+            .errRateLimited: "Too many attempts. Wait a minute and try again.",
+            .errServerError: "Server error. We're already on it — try again in a moment.",
+            .errUnexpected: "Something unexpected happened (%@). If this keeps happening, contact support.",
         ],
         .es: [
             .tabRecord: "Grabar", .tabLibrary: "Biblioteca", .tabSettings: "Ajustes",
@@ -703,11 +767,69 @@ public enum L10n {
             .libraryAccountTooltip: "Cuenta y licencia",
             .libraryActionPlay: "Ver",
             .libraryActionShowInFinder: "Finder",
-            .libraryActionDelete: "Borrar",
+            .libraryActionDelete: "Eliminar",
+
+            .lockUpgradeNow: "Actualizar ahora",
+            .lockHaveSubscription: "Ya tengo una suscripción",
+            .lockSettingsSaved: "Todos tus ajustes están guardados. Estarán aquí cuando vuelvas.",
+            .lockTrialEnded: "Tu prueba terminó",
+            .lockSubExpired: "Tu suscripción expiró",
+            .lockSignInToContinue: "Inicia sesión para continuar",
+            .lockSubEnded: "Tu suscripción terminó",
+            .lockAccessLocked: "Acceso bloqueado",
+            .lockSubtitleTrialExpired: "Pasa a Markzzy Mensual o Vitalicio para seguir grabando. Todos tus ajustes de cámara y distribución se conservan.",
+            .lockSubtitleReactivate: "Reactiva tu suscripción para seguir grabando.",
+            .lockSubtitleSignIn: "Inicia sesión con el email que usaste para suscribirte — te enviamos un enlace de activación en un clic.",
+            .lockSubtitleCanceled: "Tu suscripción fue cancelada. Reactívala cuando quieras y sigues donde lo dejaste.",
+            .lockSubtitleCantVerify: "No podemos verificar tu acceso. Intenta iniciar sesión de nuevo o contacta a soporte.",
+            .trialBannerUpgrade: "Actualizar →",
+            .dismissForToday: "Descartar por hoy",
+            .trialActiveUpgradeAnytime: "Prueba activa — actualiza cuando quieras",
+            .trialEndsTodayUpgrade: "La prueba termina hoy — actualiza para seguir grabando",
+            .trialEndsTomorrowUpgrade: "La prueba termina mañana — actualiza ahora",
+            .trialDaysLeftInTrial: "%d días de prueba restantes",
+            .paymentIssueBanner: "Problema de pago — actualiza tu tarjeta para no perder el acceso",
+
+            .errEmailEmpty: "Ingresa tu email.",
+            .errEmailNoAt: "Un email necesita una @ — como tu@gmail.com.",
+            .errEmailNoUser: "Agrega tu usuario antes de la @.",
+            .errEmailNoDomain: "Agrega el dominio después de la @ — como gmail.com.",
+            .errEmailIncomplete: "El email parece incompleto — asegúrate de que termine en .com o similar.",
+            .errEmailInvalid: "Eso no parece un email válido.",
+            .errNetworkPrefix: "Red: %@",
+            .errServerUnreachable: "No se pudo conectar con el servidor de Markzzy. Revisa tu conexión — si funciona, el servidor puede estar caído temporalmente. Intenta de nuevo en un momento.",
+            .errNoInternet: "Sin conexión a internet. Revisa tu Wi-Fi e intenta de nuevo.",
+            .errInvalidCode: "Ese código no es válido.",
+            .errCodeUsed: "Este código ya fue usado.",
+            .errCodeExpired: "El código expiró. Solicita uno nuevo.",
+            .errEmailMismatch: "El email no coincide con la cuenta.",
+            .errNoSubscription: "Este email no tiene una suscripción activa. Consigue una en markzzy.tech.",
+            .errInvalidInput: "Revisa el email y el código.",
+            .errInvalidLink: "Este enlace de activación no es válido.",
+            .errLinkUsed: "Este enlace de activación ya fue usado.",
+            .errLinkExpired: "El enlace de activación expiró. Solicita uno nuevo.",
+            .errDeviceLimit: "Ya hay otra Mac activada en esta cuenta. Ciérrala en markzzy.tech e intenta de nuevo.",
+            .errDeviceRevoked: "Esta Mac fue desconectada desde el panel.",
+            .errInvalidDevice: "No se pudo identificar esta Mac.",
+            .errRateLimited: "Demasiados intentos. Espera un minuto e intenta de nuevo.",
+            .errServerError: "Error del servidor. Ya estamos en eso — intenta de nuevo en un momento.",
+            .errUnexpected: "Ocurrió algo inesperado (%@). Si sigue pasando, contacta a soporte.",
         ],
     ]
 
     public static func t(_ key: LKey, in lang: AppLanguage) -> String {
         table[lang]?[key] ?? table[.en]?[key] ?? key.rawValue
+    }
+
+    /// The persisted UI language, for views that don't hold an `AppModel`
+    /// (e.g. license banners). Kept in sync with `AppModel.language`'s didSet.
+    public static var currentLanguage: AppLanguage {
+        AppLanguage(rawValue: UserDefaults.standard.string(forKey: "appLanguage") ?? "") ?? .en
+    }
+
+    /// Convenience for `AppModel`-less views. Re-reads on every body evaluation,
+    /// so a language change (which re-renders the tree) picks up the new value.
+    public static func t(_ key: LKey) -> String {
+        t(key, in: currentLanguage)
     }
 }
