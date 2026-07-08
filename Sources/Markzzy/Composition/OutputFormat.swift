@@ -50,6 +50,17 @@ public enum OutputFormat: String, CaseIterable, Identifiable, Codable {
 
     public var id: String { rawValue }
 
+    /// Human aspect ratio of the output frame — what the Source badge shows
+    /// (reads instantly, unlike raw cropped-source pixels). Adapts per format:
+    /// YouTube 16:9, Reels 9:16, Post 1:1.
+    public var aspectLabel: String {
+        switch self {
+        case .youtube:  return "16:9"
+        case .reel916:  return "9:16"
+        case .square11: return "1:1"
+        }
+    }
+
     public func canvasSize(for screen: ScreenSource,
                            resolution: OutputResolution = .fullHd) -> CGSize {
         switch self {

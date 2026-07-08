@@ -47,7 +47,7 @@ extension AppModel {
         let transparentPosition: CGPoint
     }
 
-    static let defaultBgColor = CGColor(red: 0.04, green: 0.52, blue: 1.0, alpha: 1)
+    static let defaultBgColor = FaceCamDefaults.bgColor
     /// Transparent silhouette default: bottom-center, flush to the floor
     /// (y=1.0 clamps to the bottom edge), ~55% width.
     static let defaultTransparentSize: CGFloat = 0.55

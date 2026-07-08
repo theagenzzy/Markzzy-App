@@ -1256,6 +1256,43 @@ public final class AppModel: ObservableObject {
         return "\(Int(r.width))×\(Int(r.height))"
     }
 
+    // MARK: - Screen recording permission
+
+    /// Whether macOS currently grants Screen Recording to this app. Backs the
+    /// Source-row empty state so a blank picker reads as "grant permission"
+    /// instead of a silent void — a re-signed dev build loses this grant and
+    /// `ScreenCapture.listSources()` then returns [] with no explanation.
+    public var screenPermissionGranted: Bool {
+        CGPreflightScreenCaptureAccess()
+    }
+
+    /// Prompt for Screen Recording. Returns true if access is (now) granted.
+    /// macOS shows the system prompt at most once per install; after a prior
+    /// denial it returns false silently and the caller deep-links to Settings.
+    @discardableResult
+    public func requestScreenAccess() -> Bool {
+        permissions.requestScreen()
+    }
+
+    /// Open System Settings → Privacy & Security → Screen Recording.
+    public func openScreenRecordingSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    /// Quit and reopen the app. Screen Recording permission enabled while the app
+    /// is running only takes effect in a FRESH process (macOS reads the grant at
+    /// launch), so this is the one-click way to apply it — no more re-prompting.
+    public func relaunch() {
+        let url = Bundle.main.bundleURL
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in
+            Task { @MainActor in NSApp.terminate(nil) }
+        }
+    }
+
     // MARK: - Persistence
     // (Library / output-directory helpers live in `AppModel+Library.swift`.)
 

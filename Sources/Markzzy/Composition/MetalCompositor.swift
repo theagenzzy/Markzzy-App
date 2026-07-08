@@ -38,7 +38,7 @@ public final class MetalCompositor {
     public var removeBackground: Bool = false
     public var bgModeValue: Int = 0       // 0=transparent 1=color 2=blur 3=image
     public var bgFreeform: Bool = false   // skip the shape clip (free silhouette)
-    public var bgColor: CGColor = CGColor(red: 0.04, green: 0.52, blue: 1.0, alpha: 1)
+    public var bgColor: CGColor = FaceCamDefaults.bgColor
     public var bgBlurRadius: CGFloat = 0
     public var bgImage: CVPixelBuffer?
     private var blurDest: MTLTexture?     // reused MPS blur destination (camera bg)

@@ -26,7 +26,7 @@ public final class PreviewEffectRenderer: NSObject, AVCaptureVideoDataOutputSamp
     private var freeform = false
     private var split = false
     private var bgMode = 0   // 0=transparent 1=color 2=blur 3=image
-    private var bgColor = CGColor(red: 0.04, green: 0.52, blue: 1.0, alpha: 1)
+    private var bgColor = FaceCamDefaults.bgColor
     private var blurRadius: CGFloat = 0
     private var bgImage: CVPixelBuffer?
 

@@ -13,6 +13,14 @@ public struct ScreenSource: Identifiable, Hashable {
 
     public func hash(into h: inout Hasher) { h.combine(id) }
     public static func == (a: ScreenSource, b: ScreenSource) -> Bool { a.id == b.id }
+
+    /// Title without the trailing "(2880×1800)" dims — e.g. "Display 1".
+    /// The picker names *which* display; the capture badge states *what* is
+    /// captured, so the resolution lives in one place, not two.
+    public var shortTitle: String {
+        title.replacingOccurrences(of: #"\s*\(\d+×\d+\)$"#,
+                                   with: "", options: .regularExpression)
+    }
 }
 
 public enum ScreenCapture {

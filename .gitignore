@@ -42,3 +42,5 @@ Markzzy.app/
 *.cer
 *.mobileprovision
 *.icns
+
+.claude/*.tmp.*

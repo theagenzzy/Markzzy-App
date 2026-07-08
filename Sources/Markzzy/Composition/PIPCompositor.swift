@@ -34,7 +34,7 @@ public final class PIPCompositor {
     public var removeBackground: Bool = false
     public var bgModeValue: Int = 0      // 0=transparent 1=color 2=blur 3=image
     public var bgFreeform: Bool = false
-    public var bgColor: CGColor = CGColor(red: 0.04, green: 0.52, blue: 1.0, alpha: 1)
+    public var bgColor: CGColor = FaceCamDefaults.bgColor
     public var bgBlurRadius: CGFloat = 0
     public var bgImage: CVPixelBuffer?
     /// Convenience for the pipOverlay cutout path (transparent vs anything else).
@@ -472,7 +472,7 @@ public final class PIPCompositor {
 
     private func makeAlphaMaskImage(shape: PIPShape,
                                     width w: CGFloat, height h: CGFloat) -> CIImage? {
-        guard let buf = makeBGRABuffer(width: Int(ceil(w)), height: Int(ceil(h)), draw: { ctx in
+        guard let buf = BorderRenderer.makeBGRABuffer(width: Int(ceil(w)), height: Int(ceil(h)), draw: { ctx in
             shape.drawAlphaMask(in: ctx, width: w, height: h)
         }) else { return nil }
         return CIImage(cvPixelBuffer: buf)
@@ -493,31 +493,4 @@ public final class PIPCompositor {
         return image
     }
 
-    private func makeBGRABuffer(width: Int, height: Int,
-                                draw: (CGContext) -> Void) -> CVPixelBuffer? {
-        var pb: CVPixelBuffer?
-        let attrs: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
-        ]
-        CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32BGRA, attrs as CFDictionary, &pb)
-        guard let buffer = pb else { return nil }
-        CVPixelBufferLockBaseAddress(buffer, [])
-        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
-        guard let base = CVPixelBufferGetBaseAddress(buffer) else { return nil }
-        let stride = CVPixelBufferGetBytesPerRow(buffer)
-        memset(base, 0, stride * height)
-        let bitmapInfo = CGImageAlphaInfo.premultipliedFirst.rawValue
-                      | CGBitmapInfo.byteOrder32Little.rawValue
-        guard let ctx = CGContext(
-            data: base,
-            width: width, height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: stride,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: bitmapInfo
-        ) else { return nil }
-        draw(ctx)
-        return buffer
-    }
 }

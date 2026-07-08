@@ -331,6 +331,7 @@ private struct FloatingPreviewControls: View {
                 ctl("stop.fill", .red) { Task { await model.toggleRecording() } }
                 bar
                 ctl("eye.slash", .white.opacity(0.7)) { onHide() }
+                    .help(model.t(.hidePreviewHint))
             }
         }
         .padding(.horizontal, 9)
@@ -366,6 +367,7 @@ private struct FloatingPreviewControls: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        .help(model.t(.cameraBackground))
     }
 
     private var bar: some View {

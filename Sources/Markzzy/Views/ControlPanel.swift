@@ -150,25 +150,18 @@ struct ControlPanel: View {
                     GroupBox {
                         VStack(spacing: 10) {
                             sourceRow(icon: "display", label: model.t(.sourceLabel)) {
-                                HStack(spacing: 6) {
-                                    Picker("", selection: $model.selectedScreen) {
-                                        ForEach(model.screenSources) {
-                                            Text($0.title).tag(Optional($0))
+                                if model.screenSources.isEmpty {
+                                    screenSourceEmptyState
+                                } else {
+                                    HStack(spacing: 6) {
+                                        Picker("", selection: $model.selectedScreen) {
+                                            ForEach(model.screenSources) {
+                                                Text($0.shortTitle).tag(Optional($0))
+                                            }
                                         }
-                                    }
-                                    .labelsHidden()
-                                    if let cap = model.effectiveCaptureLabel {
-                                        HStack(spacing: 3) {
-                                            Text(model.t(.crop)).font(.caption2)
-                                            Text(cap).font(.caption2.monospacedDigit())
-                                        }
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(
-                                            Capsule().fill(Color.accentColor.opacity(0.85))
-                                        )
-                                        .help(cropTooltip)
+                                        .labelsHidden()
+                                        .help(model.selectedScreen.map { "\($0.width)×\($0.height)" } ?? "")
+                                        captureBadge
                                     }
                                 }
                             }
@@ -374,6 +367,11 @@ struct ControlPanel: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            // Resolution feeds the baked canvas size at recording start — like
+            // Format, it can't change mid-recording, so lock it (was editable,
+            // the header updated, and the file silently ignored it).
+            .disabled(isRecording)
+            .help(isRecording ? model.t(.lockedDuringRecording) : "")
             .popover(isPresented: $showResolutionMenu, arrowEdge: .bottom) {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(OutputResolution.allCases) { r in
@@ -491,6 +489,66 @@ struct ControlPanel: View {
         guard let r = model.effectiveCaptureRect, let s = model.selectedScreen else { return "" }
         let anchor = model.screenAnchor.localizedLabel(model.language)
         return "\(Int(r.width))×\(Int(r.height)) · \(anchor) · source \(s.width)×\(s.height)"
+    }
+
+    /// Single "what gets captured" pill: the FORMAT's aspect ratio (16:9 / 9:16
+    /// / 1:1) with a crop glyph — reads instantly and never repeats the display
+    /// dims. The exact captured pixels + anchor + source live one hover away.
+    @ViewBuilder
+    private var captureBadge: some View {
+        if let screen = model.selectedScreen {
+            HStack(spacing: 3) {
+                Image(systemName: "crop").font(.system(size: 8, weight: .semibold))
+                Text(model.outputFormat.aspectLabel).font(.caption2.monospacedDigit())
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(Color.accentColor.opacity(0.85)))
+            .help(cropTooltip.isEmpty ? "\(screen.width)×\(screen.height)" : cropTooltip)
+        }
+    }
+
+    /// Shown when no screen sources are available: either Screen Recording
+    /// permission is missing (button requests it / deep-links to Settings) or
+    /// genuinely no display was found (retry re-lists). Replaces the silent
+    /// blank picker that made a re-signed build look broken.
+    private var screenSourceEmptyState: some View {
+        HStack(spacing: 8) {
+            Image(systemName: model.screenPermissionGranted
+                  ? "display.trianglebadge.exclamationmark"
+                  : "lock.shield.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(.orange)
+
+            if model.screenPermissionGranted {
+                Text(model.t(.noDisplayDetected))
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                Button(model.t(.retry)) { Task { await model.refreshDevices() } }
+                    .font(.caption).buttonStyle(.link)
+            } else {
+                Text(model.t(.screenPermissionNeeded))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(2).minimumScaleFactor(0.85)
+                Spacer(minLength: 4)
+                // Enabling Screen Recording only takes effect in a fresh process,
+                // so the primary action is Quit & Reopen (NOT re-requesting, which
+                // just re-shows the macOS "go to Settings" dialog every click).
+                Button(model.t(.openSystemSettings)) { model.openScreenRecordingSettings() }
+                    .font(.caption).buttonStyle(.link)
+                Button(model.t(.quitReopen)) { model.relaunch() }
+                    .font(.caption)
+                    .controlSize(.small)
+                    .buttonStyle(.borderedProminent)
+                    .help(model.t(.screenPermissionRelaunchHint))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.orange.opacity(0.25), lineWidth: 1))
     }
 
     private func formatTooltip(_ f: OutputFormat) -> String {
@@ -1002,6 +1060,12 @@ struct ControlPanel: View {
         .buttonStyle(.borderedProminent)
         .tint(.accentColor)
         .keyboardShortcut("r", modifiers: [.command, .shift])
+        // No screen source (permission missing or no display) → recording would
+        // fail immediately, so don't offer the dominant CTA.
+        .disabled(model.screenSources.isEmpty)
+        .help(model.screenSources.isEmpty
+              ? (model.screenPermissionGranted ? model.t(.noDisplayDetected) : model.t(.screenPermissionNeeded))
+              : "")
     }
 
     private var pauseButton: some View {
