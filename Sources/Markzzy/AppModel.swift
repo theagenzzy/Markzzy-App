@@ -731,7 +731,13 @@ public final class AppModel: ObservableObject {
             self?.updatePip(from: f, on: screen)
         }
         // Loom controls (live during recording).
-        panel.onSizePreset = { [weak self] fraction in self?.pipSize = fraction }
+        // S/M/L arrive as a fraction of the size max so all four size controls
+        // (this bubble, the main slider, the floating-preview slider, edge-drag)
+        // speak one scale.
+        panel.onSizePreset = { [weak self] fracOfMax in
+            guard let self else { return }
+            self.pipSize = min(max(fracOfMax * self.pipSizeMax, 0.08), self.pipSizeMax)
+        }
         panel.onToggleShape = { [weak self] in
             guard let self else { return }
             self.pipShape = (self.pipShape == .circle) ? .roundedRect : .circle

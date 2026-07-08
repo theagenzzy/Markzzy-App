@@ -81,7 +81,10 @@ struct ControlPanel: View {
                     // Background removal is no longer a toggle here — it's chosen
                     // via the two camera styles in the Layout picker (Reel/Post).
                     // When the circular style is active we expose its bg color.
-                    if model.layout == .pipOverlay {
+                    // Only when a camera exists — no point styling a camera that
+                    // isn't there (pick one in Sources below first).
+                    if model.layout == .pipOverlay,
+                       model.selectedCamera != nil || model.wantsContinuityCamera {
                         GroupBox {
                             VStack(spacing: 12) {
                                 if model.outputFormat != .youtube {
@@ -89,21 +92,22 @@ struct ControlPanel: View {
                                     // background-removed. No toggle — just choose
                                     // Transparent (silhouette over the screen) or
                                     // Color (shaped, color behind).
+                                    // Stable order: mode → (color + shape only in
+                                    // Color mode) → Size → Position. Size/Position
+                                    // keep their slot so the slider the user is
+                                    // reaching for doesn't jump when they flip
+                                    // Transparent/Color.
                                     backgroundModeRow
-                                    if model.faceCamBgTransparent {
+                                    if !model.faceCamBgTransparent {
                                         Divider()
-                                        sizeRow
-                                        Divider()
-                                        positionRow
-                                    } else {
                                         backgroundColorRow
                                         Divider()
                                         shapeRow
-                                        Divider()
-                                        sizeRow
-                                        Divider()
-                                        positionRow
                                     }
+                                    Divider()
+                                    sizeRow
+                                    Divider()
+                                    positionRow
                                 } else {
                                     // YouTube: plain floating PIP (no removal).
                                     shapeRow
@@ -127,8 +131,9 @@ struct ControlPanel: View {
 
                     // Split-screen / camera-only: choose the camera's background
                     // (none / blur / color / image). The person stays sharp.
-                    if model.layout == .splitScreenTop || model.layout == .splitCamTop
-                        || model.layout == .cameraOnly {
+                    if (model.layout == .splitScreenTop || model.layout == .splitCamTop
+                        || model.layout == .cameraOnly),
+                       model.selectedCamera != nil || model.wantsContinuityCamera {
                         GroupBox {
                             VStack(spacing: 12) {
                                 splitBgModeRow

@@ -117,9 +117,12 @@ final class FloatingCameraPanel: NSPanel {
     private func controlsView(scale: CGFloat) -> AnyView {
         AnyView(
             BubbleControls(
-                onSmall:  { [weak self] in self?.onSizePreset?(0.10) },
-                onMedium: { [weak self] in self?.onSizePreset?(0.16) },
-                onLarge:  { [weak self] in self?.onSizePreset?(0.24) },
+                // Fractions of the current size max (not absolute) so S/M/L span
+                // the same range as the main + floating-preview sliders — "Large"
+                // is actually large. AppModel multiplies by pipSizeMax.
+                onSmall:  { [weak self] in self?.onSizePreset?(0.25) },
+                onMedium: { [weak self] in self?.onSizePreset?(0.50) },
+                onLarge:  { [weak self] in self?.onSizePreset?(0.85) },
                 onShape:  { [weak self] in self?.onToggleShape?() },
                 onMirror: { [weak self] in self?.onToggleMirror?() }
             )
